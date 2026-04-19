@@ -1,1221 +1,1935 @@
-"""
-3D Design Studio — Streamlit + Three.js + Cloudflare R2 (Parquet)
-Architecture : Plan Editor (transforms) + Object Designer (points/segments)
-Unités       : centimètres, précision millimètre (0.1 cm)
-"""
-
-import io
-import json
-import math
-from datetime import datetime
-
-import boto3
-import pandas as pd
+# =============================================================================
+#  WorkSpace Manager — Streamlit Community Cloud  v7  (Matcha Edition)
+#  Stockage : Cloudflare R2 (boto3)
+# =============================================================================
+#  secrets.toml : R2_ACCOUNT_ID, R2_ACCESS_KEY, R2_SECRET_KEY, R2_BUCKET
+# =============================================================================
+from __future__ import annotations
+import io, json, uuid
+from datetime import date as dt_date
 import streamlit as st
-from streamlit.components.v1 import html as st_html
+import streamlit.components.v1 as components
+import pandas as pd
+import boto3
+from botocore.exceptions import ClientError
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PAGE CONFIG
-# ─────────────────────────────────────────────────────────────────────────────
-
-st.set_page_config(
-    page_title="3D Design Studio",
-    page_icon="🧊",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-st.markdown(
-    """
-    <style>
-    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600;700&family=Syne:wght@400;700;800&display=swap');
-    html, body, [class*="css"] { font-family: 'JetBrains Mono', monospace; }
-    :root {
-        --bg0:#0a0c10; --bg1:#0f1117; --bg2:#161b22; --bg3:#1c2333;
-        --border:#21262d; --accent:#1a73e8; --accent2:#2e7d32; --accent3:#f78166;
-        --text0:#e6edf3; --text1:#8b949e; --text2:#484f58;
-    }
-    .stApp { background: var(--bg0); }
-    section[data-testid="stSidebar"] {
-        background: var(--bg1) !important; border-right: 1px solid var(--border);
-    }
-    section[data-testid="stSidebar"] > div { padding-top: 0.5rem; }
-    .main .block-container { padding: 0.75rem 1rem 1rem 1rem; max-width: 100%; }
-
-    .studio-header {
-        display:flex; align-items:center; gap:10px;
-        padding:12px 0 8px 0; border-bottom:1px solid var(--border); margin-bottom:12px;
-    }
-    .studio-title {
-        font-family:'Syne',sans-serif; font-size:18px; font-weight:800;
-        color:var(--accent); letter-spacing:-0.5px;
-    }
-    .studio-sub { font-size:9px; color:var(--text2); letter-spacing:2px; text-transform:uppercase; }
-
-    .badge {
-        display:inline-block; padding:2px 8px; border-radius:4px;
-        font-size:10px; font-weight:600; letter-spacing:1px; text-transform:uppercase;
-    }
-    .badge-plan   { background:#1a2744; color:#58a6ff; border:1px solid #1f3a72; }
-    .badge-object { background:#2a1a1a; color:#f78166; border:1px solid #5a2a2a; }
-
-    .section-label {
-        font-size:9px; letter-spacing:2px; text-transform:uppercase;
-        color:var(--text2); margin:8px 0 4px 0;
-    }
-
-    .metric-row { display:grid; grid-template-columns:repeat(3,1fr); gap:6px; margin:8px 0; }
-    .metric-card {
-        background:var(--bg2); border:1px solid var(--border);
-        border-radius:6px; padding:8px 10px; text-align:center;
-    }
-    .metric-val { font-size:18px; font-weight:700; color:var(--accent); }
-    .metric-lbl { font-size:9px; color:var(--text2); letter-spacing:1px; text-transform:uppercase; }
-
-    .pos-display {
-        background:var(--bg2); border:1px solid var(--border);
-        border-radius:6px; padding:8px 12px; margin:6px 0;
-        display:flex; gap:16px; align-items:center; flex-wrap:wrap;
-    }
-    .pos-axis { font-size:11px; }
-    .pos-axis span { color:var(--text2); font-size:9px; text-transform:uppercase; margin-right:3px; }
-
-    .move-lbl {
-        font-size:9px; color:var(--text2); letter-spacing:1.5px;
-        text-transform:uppercase; margin-bottom:3px; margin-top:8px;
-    }
-
-    .info-box {
-        background:var(--bg2); border:1px solid var(--border);
-        border-radius:6px; padding:10px 12px; font-size:11px; color:var(--text1); margin:8px 0;
-    }
-    .info-box code { background:var(--bg3); padding:1px 4px; border-radius:3px; color:#3fb950; font-size:10px; }
-
-    .viewer-wrap { border-radius:8px; overflow:hidden; border:1px solid var(--border); background:#fff; }
-
-    .stButton > button {
-        background:var(--bg2) !important; border:1px solid var(--border) !important;
-        color:var(--text0) !important; font-family:'JetBrains Mono',monospace !important;
-        font-size:11px !important; border-radius:5px !important; transition:all .15s ease !important;
-    }
-    .stButton > button:hover { border-color:var(--accent) !important; color:var(--accent) !important; }
-
-    .stTabs [data-baseweb="tab"] { font-family:'JetBrains Mono',monospace; font-size:11px; }
-
-    div[data-testid="stNumberInput"] input {
-        font-family:'JetBrains Mono',monospace; font-size:12px;
-        background:var(--bg2) !important; border-color:var(--border) !important; color:var(--text0) !important;
-    }
-    div[data-testid="stDataFrame"] { font-size:11px; }
-    .stAlert { font-size:11px; }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# R2 / PARQUET
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ══════════════════════════════════════════════════════════════════════════════
+#  §1 — R2
+# ══════════════════════════════════════════════════════════════════════════════
 @st.cache_resource
 def get_r2():
-    return boto3.client(
-        "s3",
+    return boto3.client("s3",
         endpoint_url=f"https://{st.secrets['R2_ACCOUNT_ID']}.r2.cloudflarestorage.com",
         aws_access_key_id=st.secrets["R2_ACCESS_KEY"],
         aws_secret_access_key=st.secrets["R2_SECRET_KEY"],
-        region_name="auto",
-    )
+        region_name="auto")
 
+def _bkt(): return st.secrets["R2_BUCKET"]
 
-def load_parquet(key: str, cols: list) -> pd.DataFrame:
+def r2_load(key: str, cols: list[str]) -> pd.DataFrame:
     try:
-        obj = get_r2().get_object(Bucket=st.secrets["R2_BUCKET"], Key=key)
+        obj = get_r2().get_object(Bucket=_bkt(), Key=key)
         return pd.read_parquet(io.BytesIO(obj["Body"].read()))
+    except ClientError as e:
+        if e.response["Error"]["Code"] in ("NoSuchKey", "404"):
+            return pd.DataFrame(columns=cols)
+        raise
     except Exception:
         return pd.DataFrame(columns=cols)
 
-
-def save_parquet(df: pd.DataFrame, key: str) -> None:
+def r2_save(df: pd.DataFrame, key: str):
     buf = io.BytesIO()
-    df.to_parquet(buf, index=False, compression="zstd")
+    df.to_parquet(buf, index=False)
     buf.seek(0)
-    get_r2().put_object(Bucket=st.secrets["R2_BUCKET"], Key=key, Body=buf.getvalue())
+    get_r2().put_object(Bucket=_bkt(), Key=key, Body=buf.getvalue())
+
+def r2_del(key: str):
+    try: get_r2().delete_object(Bucket=_bkt(), Key=key)
+    except: pass
+
+def r2_list(prefix: str) -> list[str]:
+    try:
+        pag = get_r2().get_paginator("list_objects_v2")
+        return [o["Key"] for p in pag.paginate(Bucket=_bkt(), Prefix=prefix)
+                for o in p.get("Contents", [])]
+    except: return []
+
+def r2_copy(src: str, dst: str):
+    try: get_r2().copy_object(Bucket=_bkt(),
+                              CopySource={"Bucket": _bkt(), "Key": src}, Key=dst)
+    except: pass
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  §2 — SESSIONS CACHE
+# ══════════════════════════════════════════════════════════════════════════════
+SKEY = "sessions.parquet"
+SCOLS = ["key", "value"]
+
+def _sget() -> pd.DataFrame:
+    if "_sc" not in st.session_state:
+        st.session_state._sc = r2_load(SKEY, SCOLS)
+    return st.session_state._sc
+
+def _ssave(df: pd.DataFrame):
+    r2_save(df, SKEY)
+    st.session_state._sc = df
+
+def _srow(df, k):
+    r = df[df["key"] == k]
+    return r.iloc[0]["value"] if not r.empty else None
+
+def _sup(df, k, v):
+    if k in df["key"].values:
+        df = df.copy(); df.loc[df["key"] == k, "value"] = v
+    else:
+        df = pd.concat([df, pd.DataFrame([{"key": k, "value": v}])], ignore_index=True)
+    return df
+
+def _sdel(df, k):
+    return df[df["key"] != k].reset_index(drop=True)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  §3 — DATASTORE
+# ══════════════════════════════════════════════════════════════════════════════
+MAX_VERSIONS = 30
+
+class DataStore:
+    def __init__(self):
+        try:
+            df = _sget()
+            if df.empty or "_users_meta_" not in df["key"].values:
+                self._boot()
+        except: self._boot()
+
+    def _boot(self):
+        try: _ssave(pd.DataFrame([{"key": "_users_meta_", "value": "{}"}]))
+        except: pass
+
+    # Users
+    def get_users(self) -> list[str]:
+        try: return list(json.loads(_srow(_sget(), "_users_meta_") or "{}").keys())
+        except: return []
+
+    def add_user(self, name: str) -> bool:
+        df = _sget()
+        us = json.loads(_srow(df, "_users_meta_") or "{}")
+        if name in us: return False
+        us[name] = {"created_at": str(pd.Timestamp.now())}
+        df = _sup(df, "_users_meta_", json.dumps(us))
+        df = _sup(df, name, json.dumps([]))
+        _ssave(df); return True
+
+    def rm_user(self, name: str, to_backup: bool = True):
+        if to_backup:
+            tree = self.get_tree(name)
+            all_items: list[dict] = []
+            _tfl(tree, [], all_items, name)
+            for cat in all_items:
+                for it in cat["items"]: self._backup_item(name, it)
+        df = _sget()
+        us = json.loads(_srow(df, "_users_meta_") or "{}")
+        us.pop(name, None)
+        df = _sup(df, "_users_meta_", json.dumps(us))
+        df = _sdel(df, name)
+        _ssave(df)
+
+    def _backup_item(self, user: str, item: dict):
+        fid = item.get("file_id", ""); t = item.get("type", "table")
+        src = f"{'tables' if t == 'table' else 'maps'}/{fid}.parquet"
+        dst = f"backup/{user}/{t}/{fid}.parquet"
+        r2_copy(src, dst)
+        meta = self._get_backup_meta()
+        meta.append({"user": user, "type": t, "fid": fid,
+                     "name": item.get("name", "?"),
+                     "deleted_at": str(pd.Timestamp.now())})
+        self._save_backup_meta(meta)
+
+    def _get_backup_meta(self) -> list:
+        try:
+            df = r2_load("backup/_meta.parquet",
+                         ["user", "type", "fid", "name", "deleted_at"])
+            return df.to_dict("records")
+        except: return []
+
+    def _save_backup_meta(self, meta: list):
+        df = (pd.DataFrame(meta) if meta
+              else pd.DataFrame(columns=["user", "type", "fid", "name", "deleted_at"]))
+        r2_save(df, "backup/_meta.parquet")
+
+    # Tree
+    def get_tree(self, u: str) -> list:
+        try: return json.loads(_srow(_sget(), u) or "[]")
+        except: return []
+
+    def _wtree(self, u: str, t: list):
+        df = _sget(); df = _sup(df, u, json.dumps(t)); _ssave(df)
+
+    def add_cat(self, u: str, name: str, pid: str | None = None) -> dict:
+        t = self.get_tree(u)
+        n = {"id": uuid.uuid4().hex[:8], "name": name,
+             "children": [], "items": [], "collapsed": False}
+        if pid is None: t.append(n)
+        else: _ti(t, pid, n)
+        self._wtree(u, t); return n
+
+    def del_cat(self, u: str, cid: str):
+        tree = self.get_tree(u)
+        node = _tf(tree, cid)
+        if node:
+            all_items: list[dict] = []
+            _tfl([node], [], all_items, u)
+            for cat in all_items:
+                for it in cat["items"]: self._backup_item(u, it)
+        self._wtree(u, _tr(tree, cid))
+
+    def ren_cat(self, u, cid, nm):
+        t = self.get_tree(u); _trn(t, cid, nm); self._wtree(u, t)
+
+    def tog_col(self, u, cid):
+        t = self.get_tree(u); _ttog(t, cid); self._wtree(u, t)
+
+    def set_all_collapsed(self, u: str, collapsed: bool):
+        t = self.get_tree(u); _tset_col(t, collapsed); self._wtree(u, t)
+
+    def mv_cat(self, u, nid, newp: str | None):
+        t = self.get_tree(u); nd = _tf(t, nid)
+        if not nd: return
+        if newp and _tdesc(nd, newp): return
+        t = _tr(t, nid)
+        if newp is None: t.append(nd)
+        else: _ti(t, newp, nd)
+        self._wtree(u, t)
+
+    def add_item(self, u, cid, item):
+        t = self.get_tree(u); _tai(t, cid, item); self._wtree(u, t)
+
+    def rm_item(self, u, cid, iid, to_backup: bool = True):
+        t = self.get_tree(u)
+        if to_backup:
+            node = _tf(t, cid)
+            if node:
+                for it in node.get("items", []):
+                    if it["id"] == iid: self._backup_item(u, it); break
+        _tri(t, cid, iid); self._wtree(u, t)
+
+    def get_path(self, u, cid) -> list[str]:
+        t = self.get_tree(u); p: list[str] = []
+        _tpn(t, cid, p); return p
+
+    def get_flat(self, u) -> list[dict]:
+        t = self.get_tree(u); r: list[dict] = []
+        _tfl(t, [], r, u); return r
+
+    def gen_id(self, pfx: str = "tbl") -> str:
+        return f"{pfx}_{uuid.uuid4().hex[:16]}"
+
+    # Versions
+    def save_version(self, fid: str, src_key: str):
+        today = str(dt_date.today())
+        vkey = f"versions/{fid}/{today}.parquet"
+        existing = r2_list(f"versions/{fid}/")
+        if vkey in existing: return
+        r2_copy(src_key, vkey)
+        sorted_v = sorted(existing)
+        while len(sorted_v) >= MAX_VERSIONS:
+            r2_del(sorted_v.pop(0))
+
+    def get_versions(self, fid: str) -> list[str]:
+        keys = r2_list(f"versions/{fid}/")
+        return sorted([k.split("/")[-1].replace(".parquet", "") for k in keys], reverse=True)
+
+    def load_version(self, fid: str, date_str: str, cols: list[str]) -> pd.DataFrame:
+        return r2_load(f"versions/{fid}/{date_str}.parquet", cols)
+
+    # Tables
+    def mk_table(self, fid, bc, rows=20, cols=10) -> pd.DataFrame:
+        cns = [f"Col_{chr(65 + i % 26)}{'_' + str(i // 26) if i >= 26 else ''}"
+               for i in range(cols)]
+        df = pd.DataFrame({c: [""] * rows for c in cns})
+        df.insert(0, "_location_", [" > ".join(bc)] + [""] * (rows - 1))
+        r2_save(df, f"tables/{fid}.parquet")
+        self.save_version(fid, f"tables/{fid}.parquet")
+        return df
+
+    def resize_table(self, fid, df, nr, nc) -> pd.DataFrame:
+        vis = [c for c in df.columns if c != "_location_"]
+        loc = df["_location_"].copy(); data = df[vis].copy()
+        cur_c = len(vis)
+        if nc > cur_c:
+            for i in range(cur_c, nc):
+                cn = f"Col_{chr(65 + i % 26)}{'_' + str(i // 26) if i >= 26 else ''}"
+                data[cn] = ""
+        elif nc < cur_c: data = data.iloc[:, :nc]
+        cur_r = len(data)
+        if nr > cur_r:
+            ex = pd.DataFrame({c: [""] * (nr - cur_r) for c in data.columns})
+            data = pd.concat([data, ex], ignore_index=True)
+        elif nr < cur_r: data = data.iloc[:nr]
+        loc = loc.reindex(range(nr)).fillna("")
+        data.insert(0, "_location_", loc.values); return data
+
+    def ld_table(self, fid) -> pd.DataFrame | None:
+        df = r2_load(f"tables/{fid}.parquet", [])
+        return None if (df.empty and "_location_" not in df.columns) else df
+
+    def sv_table(self, fid, df):
+        r2_save(df, f"tables/{fid}.parquet")
+        self.save_version(fid, f"tables/{fid}.parquet")
+
+    def dl_table(self, fid): r2_del(f"tables/{fid}.parquet")
+
+    # Maps
+    def mk_map(self, fid, bc) -> pd.DataFrame:
+        df = pd.DataFrame([{"_location_": " > ".join(bc), "object_id": "_meta_",
+                            "type": "meta", "label": "map", "coords": "{}",
+                            "writable": "false"}])
+        r2_save(df, f"maps/{fid}.parquet")
+        self.save_version(fid, f"maps/{fid}.parquet")
+        return df
+
+    def ld_map(self, fid) -> pd.DataFrame | None:
+        cols = ["_location_", "object_id", "type", "label", "coords", "writable"]
+        df = r2_load(f"maps/{fid}.parquet", cols)
+        if "writable" not in df.columns: df["writable"] = "true"
+        return None if (df.empty and "object_id" not in df.columns) else df
+
+    def sv_map(self, fid, df):
+        r2_save(df, f"maps/{fid}.parquet")
+        self.save_version(fid, f"maps/{fid}.parquet")
+
+    def dl_map(self, fid): r2_del(f"maps/{fid}.parquet")
+
+    def get_backup_list(self) -> list[dict]:
+        return self._get_backup_meta()
+
+# Tree helpers
+def _ti(ns, pid, nd):
+    for n in ns:
+        if n["id"] == pid: n.setdefault("children", []).append(nd); return True
+        if _ti(n.get("children", []), pid, nd): return True
+    return False
+
+def _tr(ns, nid):
+    r = []
+    for n in ns:
+        if n["id"] == nid: continue
+        n["children"] = _tr(n.get("children", []), nid); r.append(n)
+    return r
+
+def _trn(ns, nid, nm):
+    for n in ns:
+        if n["id"] == nid: n["name"] = nm; return True
+        if _trn(n.get("children", []), nid, nm): return True
+    return False
+
+def _ttog(ns, nid):
+    for n in ns:
+        if n["id"] == nid: n["collapsed"] = not n.get("collapsed", False); return True
+        if _ttog(n.get("children", []), nid): return True
+    return False
+
+def _tset_col(ns, col):
+    for n in ns: n["collapsed"] = col; _tset_col(n.get("children", []), col)
+
+def _tf(ns, nid):
+    for n in ns:
+        if n["id"] == nid: return n
+        f = _tf(n.get("children", []), nid)
+        if f: return f
+    return None
+
+def _tdesc(nd, tid):
+    for c in nd.get("children", []):
+        if c["id"] == tid or _tdesc(c, tid): return True
+    return False
+
+def _tai(ns, cid, item):
+    for n in ns:
+        if n["id"] == cid: n.setdefault("items", []).append(item); return True
+        if _tai(n.get("children", []), cid, item): return True
+    return False
+
+def _tri(ns, cid, iid):
+    for n in ns:
+        if n["id"] == cid:
+            n["items"] = [i for i in n.get("items", []) if i["id"] != iid]; return True
+        if _tri(n.get("children", []), cid, iid): return True
+    return False
+
+def _tpn(ns, tid, p):
+    for n in ns:
+        p.append(n["name"])
+        if n["id"] == tid: return True
+        if _tpn(n.get("children", []), tid, p): return True
+        p.pop()
+    return False
+
+def _tfl(ns, path, res, u):
+    for n in ns:
+        cp = path + [n["name"]]
+        res.append({"id": n["id"], "name": n["name"], "path": cp,
+                    "items": n.get("items", []), "username": u})
+        _tfl(n.get("children", []), cp, res, u)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  §4 — STATE
+# ══════════════════════════════════════════════════════════════════════════════
+def get_ds() -> DataStore:
+    if "_ds" not in st.session_state:
+        st.session_state._ds = DataStore()
+    return st.session_state._ds
+
+def init_state():
+    defs = {
+        "current_user": None, "current_cat_id": None,
+        "current_item": None, "view": "folder",
+        "table_df": None, "undo_stack": [], "redo_stack": [],
+        "map_pending_save": None,  # JSON string to save to R2
+    }
+    for k, v in defs.items():
+        if k not in st.session_state: st.session_state[k] = v
+    get_ds()
+
+def set_user(u):
+    st.session_state.update(current_user=u, current_cat_id=None,
+                            current_item=None, view="folder")
+
+def set_cat(c):
+    st.session_state.update(current_cat_id=c, current_item=None, view="folder")
+
+def open_item(it):
+    st.session_state.update(current_item=it, view=it["type"],
+                            undo_stack=[], redo_stack=[], table_df=None)
+
+def go_back():
+    st.session_state.update(current_item=None, view="folder", table_df=None)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  §5 — CSS
+# ══════════════════════════════════════════════════════════════════════════════
+CSS = """
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@300;400;500&family=Fraunces:opsz,wght@9..144,600;9..144,800&display=swap');
+:root{
+  --bg:#f4f7f2; --bg2:#eef3ea; --card:#ffffff;
+  --ac:#4a7c59; --acl:#5e9b6e; --acd:rgba(74,124,89,.13); --acc:#3a6246;
+  --t1:#1e2e22; --t2:#4a6657; --t3:#7a9e88;
+  --bd:#c8dbc0; --bda:rgba(74,124,89,.35);
+  --shadow:0 2px 12px rgba(74,124,89,.10);
+  --shadow2:0 4px 24px rgba(74,124,89,.15);
+}
+*{font-family:'DM Mono',monospace;}
+.stApp{background:var(--bg)!important;color:var(--t1)!important;}
+#MainMenu,footer,header{visibility:hidden;}.stDeployButton{display:none;}
+section[data-testid="stSidebar"]{
+  background:var(--bg2)!important;
+  border-right:2px solid var(--bd)!important;
+  box-shadow:var(--shadow);
+}
+/* Page title */
+.pt{font-family:'Fraunces',serif;font-size:1.6rem;font-weight:800;
+  color:var(--t1);margin-bottom:14px;letter-spacing:-.01em;}
+/* Breadcrumb */
+.bc{display:flex;align-items:center;gap:4px;font-size:.75rem;
+  color:var(--t3);margin-bottom:12px;}
+.bci{cursor:pointer;color:var(--t2);padding:2px 6px;border-radius:5px;transition:all .15s;}
+.bci:hover{background:var(--acd);color:var(--ac);}
+.bci.cur{color:var(--ac);cursor:default;font-weight:500;}
+.bcs{color:var(--t3);}
+/* Section headers */
+.ush{font-family:'Fraunces',serif;font-size:.88rem;font-weight:700;
+  color:var(--t3);text-transform:uppercase;letter-spacing:.12em;
+  padding:10px 0 5px;border-bottom:1px solid var(--bd);margin:16px 0 10px;}
+/* GLOBAL buttons */
+.stButton>button{
+  font-family:'DM Mono',monospace!important;
+  background:var(--card)!important;color:var(--t2)!important;
+  border:1.5px solid var(--bd)!important;border-radius:8px!important;
+  transition:all .18s!important;font-size:.78rem!important;
+  box-shadow:0 1px 4px rgba(74,124,89,.07)!important;
+}
+.stButton>button:hover{
+  border-color:var(--bda)!important;color:var(--ac)!important;
+  background:var(--acd)!important;box-shadow:var(--shadow)!important;
+}
+.stButton>button[kind="primary"]{
+  background:var(--acd)!important;color:var(--acc)!important;
+  border-color:var(--bda)!important;font-weight:500!important;
+}
+/* SIDEBAR buttons — flat, no border */
+section[data-testid="stSidebar"] .stButton>button{
+  background:transparent!important;border:none!important;
+  box-shadow:none!important;border-radius:5px!important;
+  text-align:left!important;padding:2px 6px!important;
+  font-size:.79rem!important;color:var(--t2)!important;
+  white-space:nowrap!important;overflow:hidden!important;text-overflow:ellipsis!important;
+}
+section[data-testid="stSidebar"] .stButton>button:hover{
+  background:var(--acd)!important;color:var(--ac)!important;
+  border:none!important;box-shadow:none!important;
+}
+section[data-testid="stSidebar"] .stButton>button[kind="primary"]{
+  background:rgba(74,124,89,.18)!important;color:var(--acc)!important;
+  border:none!important;box-shadow:none!important;font-weight:600!important;
+}
+/* Inputs */
+.stTextInput>div>div>input,.stNumberInput>div>div>input{
+  background:var(--card)!important;color:var(--t1)!important;
+  border:1.5px solid var(--bd)!important;border-radius:8px!important;
+  font-family:'DM Mono',monospace!important;font-size:.82rem!important;
+}
+.stTextInput>div>div>input:focus,.stNumberInput>div>div>input:focus{
+  border-color:var(--ac)!important;box-shadow:0 0 0 3px var(--acd)!important;
+}
+.stSelectbox>div>div{
+  background:var(--card)!important;color:var(--t1)!important;
+  border:1.5px solid var(--bd)!important;border-radius:8px!important;
+}
+.stTextArea>div>div>textarea{
+  background:var(--card)!important;color:var(--t1)!important;
+  border:1.5px solid var(--bd)!important;border-radius:8px!important;
+  font-family:'DM Mono',monospace!important;font-size:.8rem!important;
+}
+.stMarkdown p{font-family:'DM Mono',monospace!important;
+  font-size:.82rem!important;color:var(--t2)!important;}
+div[data-testid="stHorizontalBlock"]{gap:5px!important;}
+/* Sidebar label */
+.sb-lbl{font-size:.62rem;color:#7a9e88;text-transform:uppercase;
+  letter-spacing:.1em;padding:10px 4px 2px;display:block;}
+/* Folder items */
+.fc{background:var(--card);border:1.5px solid var(--bd);border-radius:10px;
+  padding:14px 12px;transition:all .18s;box-shadow:var(--shadow);}
+.fc:hover{border-color:var(--bda);box-shadow:var(--shadow2);transform:translateY(-2px);}
+.fc-icon{font-size:1.8rem;margin-bottom:6px;}
+.fc-name{font-size:.82rem;color:var(--t1);font-weight:500;word-break:break-word;}
+.fc-meta{font-size:.63rem;color:var(--t3);margin-top:3px;}
+.fc-badge{font-size:.58rem;padding:2px 6px;border-radius:4px;
+  background:var(--acd);color:var(--ac);font-weight:500;display:inline-block;margin-top:4px;}
+/* Scrollbar */
+::-webkit-scrollbar{width:5px;height:5px;}
+::-webkit-scrollbar-track{background:var(--bg2);}
+::-webkit-scrollbar-thumb{background:var(--bd);border-radius:4px;}
+"""
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  §6 — SIDEBAR
+# ══════════════════════════════════════════════════════════════════════════════
+def render_sidebar():
+    ds = get_ds()
+    users = ds.get_users()
+    cu = st.session_state.get("current_user")
+
+    st.markdown(
+        '<div style="font-family:Fraunces,serif;font-size:1.15rem;font-weight:800;'
+        'color:#4a7c59;padding:14px 10px 8px;border-bottom:1px solid #c8dbc0;">'
+        '🍵 WorkSpace</div>', unsafe_allow_html=True)
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if st.button("🌐 Toutes les sessions", key="btn_all",
+                 type="primary" if cu is None else "secondary",
+                 use_container_width=True):
+        set_user(None); st.rerun()
+
+    for u in users:
+        if st.button(f"👤 {u}", key=f"bu_{u}",
+                     type="primary" if cu == u else "secondary",
+                     use_container_width=True):
+            set_user(u); st.rerun()
+
+    st.markdown("---")
+    with st.expander("➕ Nouvelle session"):
+        nu = st.text_input("Nom", key="nu_i", label_visibility="collapsed",
+                           placeholder="Nom d'utilisateur…")
+        if st.button("Créer", key="btn_nu", use_container_width=True):
+            if nu.strip():
+                if ds.add_user(nu.strip()): set_user(nu.strip()); st.rerun()
+                else: st.error("Nom déjà utilisé.")
+
+    if cu:
+        st.markdown('<span class="sb-lbl">📁 Arborescence</span>',
+                    unsafe_allow_html=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("▶ Plier", key="col_all", use_container_width=True):
+                ds.set_all_collapsed(cu, True); st.rerun()
+        with c2:
+            if st.button("▼ Déplier", key="exp_all", use_container_width=True):
+                ds.set_all_collapsed(cu, False); st.rerun()
+
+        tree = ds.get_tree(cu)
+        _render_tree(ds, cu, tree, depth=0, parent_last=[])
+
+        st.markdown("---")
+        with st.expander("➕ Catégorie racine"):
+            cn = st.text_input("Nom", key="new_cat", label_visibility="collapsed",
+                               placeholder="Nom de catégorie…")
+            if st.button("Créer", key="btn_nc", use_container_width=True):
+                if cn.strip(): ds.add_cat(cu, cn.strip()); st.rerun()
+
+        st.markdown("---")
+        with st.expander("⚠️ Supprimer session"):
+            st.warning(f"Supprimer « {cu} » ?")
+            conf = st.text_input("", key="del_sess_conf",
+                                 label_visibility="collapsed", placeholder="Taper DELETE…")
+            if st.button("Supprimer", key="btn_du", type="primary",
+                         use_container_width=True):
+                if conf.strip() == "DELETE":
+                    ds.rm_user(cu, to_backup=True); set_user(None); st.rerun()
+                else: st.error("Taper exactement DELETE")
 
 
-PROJ_KEY  = "projects.parquet"
-OBJ_KEY   = "objects.parquet"
-PTS_KEY   = "points.parquet"
-SEG_KEY   = "segments.parquet"
-
-PROJ_COLS = ["project_id", "name", "created_at"]
-OBJ_COLS  = [
-    "object_id", "project_id", "name",
-    "pos_x", "pos_y", "pos_z",
-    "rot_x", "rot_y", "rot_z", "rot_w",
-    "scale_x", "scale_y", "scale_z",
-]
-PTS_COLS  = ["point_id", "object_id", "x", "y", "z"]
-SEG_COLS  = ["segment_id", "object_id", "point_a_id", "point_b_id"]
+def _trunc(s: str, n: int = 16) -> str:
+    return s[:n] + "…" if len(s) > n else s
 
 
-def next_id(df: pd.DataFrame, col: str) -> int:
-    if df.empty or col not in df.columns or df[col].isnull().all():
-        return 1
-    return int(df[col].max()) + 1
+def _render_tree(ds, user, nodes, depth, parent_last, max_depth=2):
+    """
+    Rendu de l'arborescence.
+    Branches visuelles en HTML pur via st.markdown AVANT les colonnes de boutons.
+    Les boutons eux-mêmes n'ont AUCUN texte de branche.
+    """
+    cc = st.session_state.get("current_cat_id")
+    n = len(nodes)
+    for idx, node in enumerate(nodes):
+        nid = node["id"]; name = node["name"]
+        kids = node.get("children", [])
+        collapsed = node.get("collapsed", False)
+        sel = cc == nid; is_last = (idx == n - 1)
+        has_kids = bool(kids) and depth < max_depth
+        icon = "📁" if kids else "📂"
+
+        # ── Branche SVG séparée des boutons ──────────────────────────────────
+        if depth > 0:
+            # Construction SVG
+            svg_w = depth * 14 + 20
+            svg_h = 30
+            lines = []
+            # Lignes verticales des ancêtres
+            for lvl, pl in enumerate(parent_last):
+                x = 7 + lvl * 14
+                if not pl:
+                    lines.append(
+                        f'<line x1="{x}" y1="0" x2="{x}" y2="{svg_h}" '
+                        f'stroke="#c8dbc0" stroke-width="1.5"/>')
+            # Branche du nœud courant
+            cx = 7 + (depth - 1) * 14
+            bot = svg_h // 2 if is_last else svg_h
+            lines.append(f'<line x1="{cx}" y1="0" x2="{cx}" y2="{bot}" '
+                         f'stroke="#c8dbc0" stroke-width="1.5"/>')
+            lines.append(f'<line x1="{cx}" y1="{svg_h//2}" x2="{cx+14}" '
+                         f'y2="{svg_h//2}" stroke="#c8dbc0" stroke-width="1.5"/>')
+            lines.append(f'<circle cx="{cx+14}" cy="{svg_h//2}" r="3" '
+                         f'fill="#4a7c59" opacity="0.7"/>')
+            svg = (f'<svg width="{svg_w}" height="{svg_h}" '
+                   f'style="display:block;margin-bottom:-4px;">'
+                   + "".join(lines) + "</svg>")
+            st.markdown(svg, unsafe_allow_html=True)
+
+        # ── Boutons sans branche dans leur label ──────────────────────────────
+        label = f"{icon} {_trunc(name)}"
+        if has_kids:
+            c_tog, c_nom, c_pop = st.columns([0.11, 0.74, 0.15])
+            with c_tog:
+                lbl = "▶" if collapsed else "▼"
+                if st.button(lbl, key=f"tgl_{nid}", use_container_width=True):
+                    ds.tog_col(user, nid); st.rerun()
+        else:
+            c_nom, c_pop = st.columns([0.85, 0.15])
+
+        with c_nom:
+            if st.button(label, key=f"cat_{nid}",
+                         type="primary" if sel else "secondary",
+                         use_container_width=True):
+                set_cat(nid); st.rerun()
+
+        with c_pop:
+            _cat_menu(ds, user, nid, name, cc)
+
+        if has_kids and not collapsed:
+            _render_tree(ds, user, kids, depth + 1, parent_last + [is_last])
 
 
-def init_r2_tables():
-    for key, cols in [
-        (PROJ_KEY, PROJ_COLS), (OBJ_KEY, OBJ_COLS),
-        (PTS_KEY, PTS_COLS),   (SEG_KEY, SEG_COLS),
-    ]:
-        if load_parquet(key, cols).empty:
-            try:
-                save_parquet(pd.DataFrame(columns=cols), key)
-            except Exception:
-                pass
+def _cat_menu(ds, user, nid, name, current_cat):
+    with st.popover("⋯"):
+        sub = st.text_input("", key=f"sub_{nid}", placeholder="Sous-cat…",
+                            label_visibility="collapsed")
+        if st.button("➕ Ajouter sous-cat.", key=f"addsub_{nid}",
+                     use_container_width=True):
+            if sub.strip(): ds.add_cat(user, sub.strip(), pid=nid); st.rerun()
+
+        nn = st.text_input("", key=f"ren_{nid}", value=name,
+                           label_visibility="collapsed")
+        if st.button("✏️ Renommer", key=f"doRen_{nid}", use_container_width=True):
+            if nn.strip() and nn != name:
+                ds.ren_cat(user, nid, nn.strip()); st.rerun()
+
+        flat = ds.get_flat(user)
+        opts = {c["name"]: c["id"] for c in flat if c["id"] != nid}
+        opts["(Racine)"] = None
+        tgt = st.selectbox("Déplacer vers", list(opts.keys()), key=f"mv_{nid}")
+        if st.button("↗️ Déplacer", key=f"doMv_{nid}", use_container_width=True):
+            ds.mv_cat(user, nid, opts[tgt]); st.rerun()
+
+        st.divider()
+        conf = st.text_input("", key=f"dc_{nid}", placeholder="DELETE",
+                             label_visibility="collapsed")
+        if st.button("🗑️ Supprimer", key=f"del_{nid}", type="primary",
+                     use_container_width=True):
+            if conf.strip() == "DELETE":
+                ds.del_cat(user, nid)
+                if current_cat == nid: set_cat(None)
+                st.rerun()
+            else: st.error("Taper DELETE")
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  §7 — ALL SESSIONS
+# ══════════════════════════════════════════════════════════════════════════════
+def render_all_sessions():
+    ds = get_ds(); users = ds.get_users()
+    st.markdown('<div class="pt">🌐 Toutes les sessions</div>',
+                unsafe_allow_html=True)
+    if not users:
+        st.info("Aucune session. Créez-en une depuis la barre latérale."); return
+    for user in users:
+        st.markdown(f'<div class="ush">👤 {user}</div>', unsafe_allow_html=True)
+        tree = ds.get_tree(user)
+        if not tree:
+            st.markdown('<p style="color:var(--t3);font-size:.8rem;">Aucune catégorie</p>',
+                        unsafe_allow_html=True)
+        else: _all_cats(ds, user, tree, 0)
+        if st.button(f"→ Ouvrir {user}", key=f"oas_{user}"):
+            set_user(user); st.rerun()
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    st.markdown("---")
+    st.markdown('<div class="pt" style="font-size:1.1rem;">🗄️ Corbeille</div>',
+                unsafe_allow_html=True)
+    _render_backup(ds)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SESSION STATE
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _ss(k, v):
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-
-def init_session():
-    _ss("mode",         "plan_editor")
-    _ss("project_id",   None)
-    _ss("object_id",    None)
-    _ss("selected_pts", [])
-    _ss("show_grid",    True)
-    _ss("show_axes",    True)
-    _ss("snap",         True)
-    _ss("snap_dist",    5.0)
-    _ss("r2_ready",     False)
-    _ss("move_step",    1.0)
-    _ss("rot_step",     5.0)
-    _ss("scale_step",   0.1)
-    _ss("pt_move_step", 1.0)
+def _all_cats(ds, user, nodes, depth):
+    for n in nodes:
+        ni = len(n.get("items", [])); nc = len(n.get("children", []))
+        pre = "　" * depth; icon = "📁" if nc else "📂"
+        ca, cb, cc = st.columns([.55, .25, .2])
+        with ca:
+            st.markdown(
+                f'<span style="font-size:.82rem;color:var(--t2);">'
+                f'{pre}{icon} <b>{n["name"]}</b></span>',
+                unsafe_allow_html=True)
+        with cb:
+            if ni or nc:
+                st.markdown(
+                    f'<span style="font-size:.68rem;color:var(--ac);">'
+                    f'{ni} fich.·{nc} ss</span>', unsafe_allow_html=True)
+        with cc:
+            if st.button("→", key=f"oac_{user}_{n['id']}"):
+                set_user(user); set_cat(n["id"]); st.rerun()
+        if depth == 0 and n.get("children"):
+            _all_cats(ds, user, n["children"], 1)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# MATH HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
+def _render_backup(ds: DataStore):
+    items = ds.get_backup_list()
+    if not items: st.info("Aucun élément supprimé."); return
+    for i, it in enumerate(items):
+        c1, c2, c3, c4 = st.columns([.3, .2, .2, .3])
+        with c1: st.markdown(f'**{it.get("name","?")}** ({it.get("type","?")})')
+        with c2:
+            st.markdown(f'<span style="font-size:.7rem;color:var(--t3);">'
+                        f'{it.get("user","?")}</span>', unsafe_allow_html=True)
+        with c3:
+            st.markdown(
+                f'<span style="font-size:.68rem;color:var(--t3);">'
+                f'{str(it.get("deleted_at",""))[:10]}</span>',
+                unsafe_allow_html=True)
+        with c4:
+            fid = it.get("fid", ""); tp = it.get("type", "table")
+            vkey = f"backup/{it['user']}/{tp}/{fid}.parquet"
+            if st.button(f"⬇ Restaurer", key=f"rst_{fid}_{i}",
+                         use_container_width=True):
+                dst = f"{'tables' if tp == 'table' else 'maps'}/{fid}.parquet"
+                r2_copy(vkey, dst)
+                st.success(f"Fichier {fid} restauré.")
 
-def quat_to_euler(qx, qy, qz, qw):
-    sinr = 2*(qw*qx + qy*qz); cosr = 1 - 2*(qx*qx + qy*qy)
-    ex   = math.degrees(math.atan2(sinr, cosr))
-    sinp = 2*(qw*qy - qz*qx)
-    ey   = math.degrees(math.asin(max(-1, min(1, sinp))))
-    siny = 2*(qw*qz + qx*qy); cosy = 1 - 2*(qy*qy + qz*qz)
-    ez   = math.degrees(math.atan2(siny, cosy))
-    return ex, ey, ez
+# ══════════════════════════════════════════════════════════════════════════════
+#  §8 — FOLDER VIEW
+# ══════════════════════════════════════════════════════════════════════════════
+def render_folder():
+    ds = get_ds()
+    user = st.session_state.current_user
+    cat_id = st.session_state.get("current_cat_id")
+    _render_bc(ds, user, cat_id)
+
+    if cat_id is None:
+        st.markdown('<div class="pt">🏠 Accueil</div>', unsafe_allow_html=True)
+        st.info("Sélectionnez ou créez une catégorie dans la barre latérale.")
+        return
+
+    node = _tf(ds.get_tree(user), cat_id)
+    if node is None:
+        st.warning("Catégorie introuvable."); set_cat(None); st.rerun(); return
+
+    st.markdown(f'<div class="pt">📁 {node["name"]}</div>', unsafe_allow_html=True)
+
+    c1, c2, c3, _ = st.columns([1, 1, 1, 4])
+    with c1:
+        if st.button("➕ Dossier", use_container_width=True):
+            st.session_state._sn = "folder"
+    with c2:
+        if st.button("📊 Table", use_container_width=True):
+            st.session_state._sn = "table"
+    with c3:
+        if st.button("🧠 Map", use_container_width=True):
+            st.session_state._sn = "map"
+
+    sn = st.session_state.get("_sn")
+    if sn == "folder":
+        with st.container(border=True):
+            st.markdown("**➕ Nouveau sous-dossier**")
+            fn = st.text_input("Nom", key="nfn", placeholder="Nom…")
+            a, b = st.columns(2)
+            with a:
+                if st.button("Créer", key="cfn", use_container_width=True):
+                    if fn.strip():
+                        ds.add_cat(user, fn.strip(), pid=cat_id)
+                        st.session_state._sn = None; st.rerun()
+            with b:
+                if st.button("Annuler", key="xfn", use_container_width=True):
+                    st.session_state._sn = None; st.rerun()
+    elif sn == "table":
+        with st.container(border=True):
+            st.markdown("**📊 Nouvelle table**")
+            tn = st.text_input("Nom", key="ntn", placeholder="Nom…")
+            tc2, tr2 = st.columns(2)
+            with tc2: tcols = st.number_input("Colonnes", 1, 200, 10, key="ntc")
+            with tr2: trows = st.number_input("Lignes", 1, 2000, 20, key="ntr")
+            a, b = st.columns(2)
+            with a:
+                if st.button("Créer", key="ctn", use_container_width=True):
+                    if tn.strip():
+                        _mk_table(ds, user, cat_id, tn.strip(),
+                                  int(tcols), int(trows))
+                        st.session_state._sn = None; st.rerun()
+            with b:
+                if st.button("Annuler", key="xtn", use_container_width=True):
+                    st.session_state._sn = None; st.rerun()
+    elif sn == "map":
+        with st.container(border=True):
+            st.markdown("**🧠 Nouvelle map**")
+            mn = st.text_input("Nom", key="nmn", placeholder="Nom…")
+            a, b = st.columns(2)
+            with a:
+                if st.button("Créer", key="cmn", use_container_width=True):
+                    if mn.strip():
+                        _mk_map(ds, user, cat_id, mn.strip())
+                        st.session_state._sn = None; st.rerun()
+            with b:
+                if st.button("Annuler", key="xmn", use_container_width=True):
+                    st.session_state._sn = None; st.rerun()
+
+    kids = node.get("children", []); items = node.get("items", [])
+
+    if kids:
+        st.markdown(
+            '<div style="font-size:.68rem;color:var(--t3);text-transform:uppercase;'
+            'letter-spacing:.1em;margin:18px 0 6px;">📁 Sous-dossiers</div>',
+            unsafe_allow_html=True)
+        for idx, ch in enumerate(kids):
+            ni = len(ch.get("items", [])); nc = len(ch.get("children", []))
+            is_last = (idx == len(kids) - 1)
+            bot_pct = "50%" if is_last else "100%"
+            svg = (f'<svg width="30" height="52" style="display:block;">'
+                   f'<line x1="10" y1="0" x2="10" y2="{bot_pct}" '
+                   f'stroke="#c8dbc0" stroke-width="2"/>'
+                   f'<line x1="10" y1="26" x2="26" y2="26" '
+                   f'stroke="#c8dbc0" stroke-width="2"/>'
+                   f'<circle cx="26" cy="26" r="4" fill="#4a7c59" opacity=".75"/>'
+                   f'</svg>')
+            cs, ci, cb2 = st.columns([0.05, 0.72, 0.23])
+            with cs: st.markdown(svg, unsafe_allow_html=True)
+            with ci:
+                st.markdown(
+                    f'<div style="padding:6px 0;line-height:1.3;">'
+                    f'<span style="font-size:.85rem;color:#1e2e22;font-weight:500;">'
+                    f'📁 {ch["name"]}</span>'
+                    f'<span style="font-size:.62rem;color:#7a9e88;margin-left:8px;">'
+                    f'{ni} fich. · {nc} ss-doss.</span></div>',
+                    unsafe_allow_html=True)
+            with cb2:
+                if st.button("Ouvrir →", key=f"okid_{ch['id']}",
+                             use_container_width=True):
+                    set_cat(ch["id"]); st.rerun()
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    if items:
+        st.markdown(
+            '<div style="font-size:.68rem;color:var(--t3);text-transform:uppercase;'
+            'letter-spacing:.1em;margin:8px 0 10px;">📄 Fichiers</div>',
+            unsafe_allow_html=True)
+        cols = st.columns(min(len(items), 4))
+        for i, it in enumerate(items):
+            with cols[i % 4]:
+                icon = "📊" if it["type"] == "table" else "🧠"
+                badge = "TABLE" if it["type"] == "table" else "MAP"
+                st.markdown(
+                    f'<div class="fc"><div class="fc-icon">{icon}</div>'
+                    f'<div class="fc-name">{it["name"]}</div>'
+                    f'<span class="fc-badge">{badge}</span></div>',
+                    unsafe_allow_html=True)
+                a, b = st.columns(2)
+                with a:
+                    if st.button("Ouvrir", key=f"oit_{it['id']}",
+                                 use_container_width=True):
+                        open_item(it); st.rerun()
+                with b:
+                    if st.button("🗑️", key=f"dit_{it['id']}",
+                                 use_container_width=True):
+                        st.session_state[f"dc_{it['id']}"] = True
+
+                if st.session_state.get(f"dc_{it['id']}"):
+                    conf = st.text_input("", key=f"dcc_{it['id']}",
+                                        placeholder="DELETE",
+                                        label_visibility="collapsed")
+                    if st.button("Confirmer", key=f"dco_{it['id']}",
+                                 type="primary", use_container_width=True):
+                        if conf.strip() == "DELETE":
+                            ds.rm_item(user, cat_id, it["id"], to_backup=True)
+                            (ds.dl_table if it["type"] == "table"
+                             else ds.dl_map)(it["file_id"])
+                            st.session_state.pop(f"dc_{it['id']}", None)
+                            st.rerun()
+                        else: st.error("Taper DELETE")
+
+    if not kids and not items:
+        st.markdown(
+            '<p style="color:var(--t3);font-size:.85rem;margin-top:20px;'
+            'text-align:center;">Dossier vide — utilisez la barre d\'outils.</p>',
+            unsafe_allow_html=True)
 
 
-def euler_to_quat(ex, ey, ez):
-    rx, ry, rz = math.radians(ex), math.radians(ey), math.radians(ez)
-    cy, sy = math.cos(rz/2), math.sin(rz/2)
-    cp, sp = math.cos(ry/2), math.sin(ry/2)
-    cr, sr = math.cos(rx/2), math.sin(rx/2)
-    return (
-        sr*cp*cy - cr*sp*sy,
-        cr*sp*cy + sr*cp*sy,
-        cr*cp*sy - sr*sp*cy,
-        cr*cp*cy + sr*sp*sy,
+def _render_bc(ds, user, cat_id):
+    path = ds.get_path(user, cat_id) if cat_id else []
+    parts = ["🏠 Accueil"] + path
+    html = '<div class="bc">'
+    for i, p in enumerate(parts):
+        cls = "bci cur" if i == len(parts) - 1 else "bci"
+        html += f'<span class="{cls}">{p}</span>'
+        if i < len(parts) - 1: html += '<span class="bcs"> › </span>'
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+    if path:
+        if st.button("🏠", key="bc_home", help="Accueil"):
+            set_cat(None); st.rerun()
+
+
+def _mk_table(ds, user, cat_id, name, cols, rows):
+    bc = [user] + ds.get_path(user, cat_id)
+    fid = ds.gen_id("tbl")
+    ds.mk_table(fid, bc, rows, cols)
+    ds.add_item(user, cat_id, {"id": fid, "name": name,
+                               "type": "table", "file_id": fid})
+
+
+def _mk_map(ds, user, cat_id, name):
+    bc = [user] + ds.get_path(user, cat_id)
+    fid = ds.gen_id("map")
+    ds.mk_map(fid, bc)
+    ds.add_item(user, cat_id, {"id": fid, "name": name,
+                               "type": "map", "file_id": fid})
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  §9 — TABLE VIEW
+#
+#  Architecture définitive :
+#  - on_change callback est la SEULE façon fiable de détecter une vraie édition
+#  - Le callback copie le DataFrame retourné par data_editor dans session_state
+#    SOUS UNE CLÉ SÉPARÉE (pas table_df) pour éviter les conflits de rerun
+#  - Au render suivant, on fusionne et on sauvegarde
+# ══════════════════════════════════════════════════════════════════════════════
+def render_table():
+    ds = get_ds()
+    item = st.session_state.get("current_item")
+    if not item: go_back(); st.rerun(); return
+    fid = item["file_id"]
+
+    # ── Chargement initial ────────────────────────────────────────────────────
+    if st.session_state.table_df is None:
+        df = ds.ld_table(fid)
+        if df is None or df.empty:
+            st.error("Table introuvable."); go_back(); st.rerun(); return
+        st.session_state.table_df = df
+        st.session_state.undo_stack = []
+        st.session_state.redo_stack = []
+
+    df: pd.DataFrame = st.session_state.table_df
+    vis = [c for c in df.columns if c != "_location_"]
+
+    # ── Header ────────────────────────────────────────────────────────────────
+    cb, ct = st.columns([.12, .88])
+    with cb:
+        if st.button("← Retour", key="tb_back", use_container_width=True):
+            ds.sv_table(fid, st.session_state.table_df)
+            go_back(); st.rerun()
+    with ct:
+        st.markdown(f'<div class="pt">📊 {item["name"]}</div>',
+                    unsafe_allow_html=True)
+
+    # ── Toolbar ───────────────────────────────────────────────────────────────
+    can_u = bool(st.session_state.undo_stack)
+    can_r = bool(st.session_state.redo_stack)
+    c_u, c_r, c_s, c_v, _ = st.columns([.09, .09, .09, .3, .43])
+    with c_u:
+        if st.button("↩", key="tu", disabled=not can_u,
+                     help=f"Annuler ({len(st.session_state.undo_stack)})",
+                     use_container_width=True):
+            _tundo(ds, fid); st.rerun()
+    with c_r:
+        if st.button("↪", key="tr", disabled=not can_r,
+                     help=f"Rétablir ({len(st.session_state.redo_stack)})",
+                     use_container_width=True):
+            _tredo(ds, fid); st.rerun()
+    with c_s:
+        if st.button("💾", key="ts", help="Sauvegarder maintenant",
+                     use_container_width=True):
+            ds.sv_table(fid, st.session_state.table_df)
+            st.toast("Sauvegardé ✓", icon="✅")
+    with c_v:
+        _render_version_picker(ds, fid, "table")
+
+    # ── Resize ────────────────────────────────────────────────────────────────
+    with st.expander("⚙️ Redimensionner"):
+        rr2, rc2, rb2 = st.columns([.35, .35, .3])
+        with rr2: nr = st.number_input("Lignes", 1, 5000, len(df), key="rsz_r")
+        with rc2: nc = st.number_input("Colonnes", 1, 500, len(vis), key="rsz_c")
+        with rb2:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Appliquer", key="rsz_ok", use_container_width=True):
+                _tpush_undo()
+                ndf = ds.resize_table(fid, st.session_state.table_df,
+                                      int(nr), int(nc))
+                st.session_state.table_df = ndf
+                st.session_state.redo_stack = []
+                ds.sv_table(fid, ndf); st.rerun()
+
+    st.markdown("---")
+    visible_df = df[vis].copy().reset_index(drop=True)
+
+    # ── on_change callback ────────────────────────────────────────────────────
+    # Streamlit appelle ce callback UNIQUEMENT lors d'une vraie modification
+    # utilisateur (Enter, Tab, clic hors cellule).
+    # Le callback reçoit le nouveau df via st.session_state[ekey] qui EST
+    # à jour au moment de l'appel du callback.
+    ekey = f"tbl_{fid}"
+
+    def _on_change():
+        # st.session_state[ekey] est un dict Streamlit :
+        # {"edited_rows": {row_idx: {col: val}}, "added_rows": [], "deleted_rows": []}
+        # On applique ce diff sur la source de vérité (table_df).
+        diff = st.session_state.get(ekey)
+        if not isinstance(diff, dict): return
+        edited_rows = diff.get("edited_rows", {})
+        if not edited_rows: return  # rien à faire
+        _tpush_undo()
+        # Partir de la copie visible actuelle
+        base = st.session_state.table_df[vis].copy().reset_index(drop=True)
+        for row_str, changes in edited_rows.items():
+            try: row_idx = int(row_str)
+            except: continue
+            if row_idx >= len(base): continue
+            for col, val in changes.items():
+                if col in base.columns:
+                    base.at[row_idx, col] = "" if val is None else str(val)
+        loc = st.session_state.table_df["_location_"].reset_index(drop=True)
+        new_df = base.copy()
+        if len(loc) != len(new_df):
+            loc = loc.reindex(range(len(new_df))).fillna("")
+        new_df.insert(0, "_location_", loc.values)
+        st.session_state.table_df = new_df
+        st.session_state.redo_stack = []
+        ds.sv_table(fid, new_df)
+
+    st.data_editor(
+        visible_df,
+        use_container_width=True,
+        num_rows="fixed",
+        key=ekey,
+        column_config={c: st.column_config.TextColumn(c, width="medium")
+                       for c in vis},
+        hide_index=False,
+        on_change=_on_change,
     )
 
-
-def compose_rot(qx, qy, qz, qw, axis: str, deg: float):
-    """Applique une rotation delta (axe mondial) sur un quaternion."""
-    a = math.radians(deg) / 2
-    c, s = math.cos(a), math.sin(a)
-    dq = {"x": (s,0,0,c), "y": (0,s,0,c), "z": (0,0,s,c)}[axis]
-    dx, dy, dz, dw = dq
-    nx = dw*qx + dx*qw + dy*qz - dz*qy
-    ny = dw*qy - dx*qz + dy*qw + dz*qx
-    nz = dw*qz + dx*qy - dy*qx + dz*qw
-    nw = dw*qw - dx*qx - dy*qy - dz*qz
-    return nx, ny, nz, nw
+    nr2, nc2 = visible_df.shape
+    st.markdown(
+        f'<div style="font-size:.68rem;color:var(--t3);margin-top:5px;">'
+        f'📐 {nr2}×{nc2} &nbsp;|&nbsp; ☁️ tables/{fid}.parquet</div>',
+        unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# SCENE JSON
-# ─────────────────────────────────────────────────────────────────────────────
-
-def build_scene_json(project_id, obj_df, pts_df, seg_df, sel_obj, sel_pts) -> dict:
-    scene = {
-        "objects":  [],
-        "showGrid": st.session_state["show_grid"],
-        "showAxes": st.session_state["show_axes"],
-        "snap":     st.session_state["snap"],
-        "snapDist": st.session_state["snap_dist"],
-        "unitScale": 0.01,
-        "mode":     st.session_state["mode"],
-    }
-    if project_id is None or obj_df.empty:
-        return scene
-
-    for _, obj in obj_df[obj_df["project_id"] == project_id].iterrows():
-        oid   = int(obj["object_id"])
-        o_pts = pts_df[pts_df["object_id"] == oid] if not pts_df.empty else pd.DataFrame()
-        o_seg = seg_df[seg_df["object_id"]  == oid] if not seg_df.empty else pd.DataFrame()
-
-        pts  = [{"id": int(p["point_id"]), "x": float(p["x"]), "y": float(p["y"]),
-                 "z": float(p["z"]), "sel": int(p["point_id"]) in sel_pts}
-                for _, p in o_pts.iterrows()]
-        segs = [{"id": int(s["segment_id"]), "a": int(s["point_a_id"]), "b": int(s["point_b_id"])}
-                for _, s in o_seg.iterrows()]
-
-        scene["objects"].append({
-            "id": oid, "name": str(obj["name"]),
-            "pos": {"x": float(obj["pos_x"]), "y": float(obj["pos_y"]), "z": float(obj["pos_z"])},
-            "rot": {"x": float(obj["rot_x"]), "y": float(obj["rot_y"]),
-                    "z": float(obj["rot_z"]), "w": float(obj["rot_w"])},
-            "scl": {"x": float(obj["scale_x"]), "y": float(obj["scale_y"]), "z": float(obj["scale_z"])},
-            "points": pts, "segments": segs, "sel": oid == sel_obj,
-        })
-    return scene
+def _tpush_undo():
+    st.session_state.undo_stack.append(
+        st.session_state.table_df.copy(deep=True))
+    if len(st.session_state.undo_stack) > 50:
+        st.session_state.undo_stack.pop(0)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# THREE.JS VIEWER
-# ─────────────────────────────────────────────────────────────────────────────
+def _tundo(ds, fid):
+    if not st.session_state.undo_stack: return
+    st.session_state.redo_stack.append(
+        st.session_state.table_df.copy(deep=True))
+    st.session_state.table_df = st.session_state.undo_stack.pop()
+    ds.sv_table(fid, st.session_state.table_df)
 
-def render_viewer(scene: dict, mode: str, height: int = 520):
-    sj       = json.dumps(scene)
-    is_plan  = mode == "plan_editor"
-    bcls     = "badge-plan" if is_plan else "badge-object"
-    blbl     = "PLAN EDITOR" if is_plan else "OBJECT DESIGNER"
 
-    viewer_html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
+def _tredo(ds, fid):
+    if not st.session_state.redo_stack: return
+    st.session_state.undo_stack.append(
+        st.session_state.table_df.copy(deep=True))
+    st.session_state.table_df = st.session_state.redo_stack.pop()
+    ds.sv_table(fid, st.session_state.table_df)
+
+
+def _render_version_picker(ds: DataStore, fid: str, kind: str):
+    versions = ds.get_versions(fid)
+    if not versions: return
+    with st.popover(f"🕐 Versions ({len(versions)})"):
+        sel_v = st.selectbox("Version", versions, key=f"vsel_{fid}")
+        if st.button("⬇ Restaurer", key=f"vrst_{fid}", type="primary",
+                     use_container_width=True):
+            cols = ([] if kind == "table"
+                    else ["_location_", "object_id", "type",
+                          "label", "coords", "writable"])
+            restored = ds.load_version(fid, sel_v, cols)
+            if not restored.empty:
+                if kind == "table":
+                    st.session_state.table_df = restored
+                    ds.sv_table(fid, restored)
+                else:
+                    ds.sv_map(fid, restored)
+                st.success(f"Version {sel_v} restaurée !"); st.rerun()
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  §10 — MAP VIEW
+#
+#  Architecture complètement repensée :
+#  Le canvas est une page HTML autonome qui stocke son état dans sessionStorage.
+#  La sauvegarde vers R2 passe par un bouton Streamlit explicite qui lit
+#  les données depuis un st.text_area que le canvas remplit.
+#
+#  Pour l'autosave : le canvas écrit dans un input Streamlit via un pont
+#  components.html qui intercepte les messages et déclenche un st.rerun.
+#  La clé est de ne PAS utiliser postMessage vers le parent (iframe restrictions)
+#  mais d'utiliser un st.text_area comme canal de communication.
+# ══════════════════════════════════════════════════════════════════════════════
+MAX_CHARS = 500  # absolue max global; la limite réelle est calculée par forme
+
+def _build_map_html(objs_json: str, fid: str, loc: str) -> str:
+    """
+    Canvas HTML5 complet et autonome.
+    Communication avec Streamlit :
+    - Le canvas écrit ses données sérialisées dans un textarea HTML DANS le même
+      composant (pas cross-iframe).
+    - Un bouton Streamlit en dehors lit ce textarea via st.text_area et sauvegarde.
+    - Pour l'autosave : on utilise sessionStorage comme buffer, et le canvas
+      expose une fonction window.getMapData() que le bridge peut appeler.
+    """
+    return f"""<!DOCTYPE html><html><head><meta charset="UTF-8">
 <style>
-  *{{margin:0;padding:0;box-sizing:border-box;}}
-  body{{background:#fff;overflow:hidden;font-family:'JetBrains Mono',monospace;}}
-  #wrap{{width:100%;height:{height}px;position:relative;}}
-  .hud{{position:absolute;pointer-events:none;font-size:10px;}}
-  #badge{{top:10px;left:10px;padding:4px 10px;border-radius:4px;font-weight:700;letter-spacing:1.5px;text-transform:uppercase;}}
-  .badge-plan{{background:rgba(26,39,68,.88);color:#58a6ff;border:1px solid #1f3a72;}}
-  .badge-object{{background:rgba(42,26,26,.88);color:#f78166;border:1px solid #5a2a2a;}}
-  #coords{{bottom:10px;left:10px;color:#333;background:rgba(255,255,255,.9);padding:5px 10px;border-radius:4px;border:1px solid #ccc;font-size:11px;}}
-  #help{{top:10px;right:10px;color:#555;background:rgba(255,255,255,.9);padding:8px 12px;border-radius:6px;border:1px solid #ccc;line-height:1.9;}}
-  #status{{bottom:10px;right:10px;color:#444;background:rgba(255,255,255,.9);padding:5px 10px;border-radius:4px;border:1px solid #ccc;}}
-</style>
-</head>
-<body>
-<div id="wrap">
-  <div id="badge" class="hud {bcls}">{blbl}</div>
-  <div id="help" class="hud">
-    🖱 Clic droit + glisser → rotation caméra<br>
-    🖱 Molette + glisser → pan<br>
-    🖱 Molette → zoom<br>
-    🖱 Clic gauche → sélectionner objet
-  </div>
-  <div id="coords" class="hud">X: 0.0 · Y: 0.0 · Z: 0.0 cm</div>
-  <div id="status" class="hud">Prêt</div>
+*{{box-sizing:border-box;margin:0;padding:0;}}
+html,body{{width:100%;height:100%;overflow:hidden;background:#f4f7f2;
+  font-family:'DM Mono',monospace;color:#1e2e22;user-select:none;}}
+#tb{{display:flex;align-items:center;gap:4px;padding:6px 10px;
+  background:#eef3ea;border-bottom:1.5px solid #c8dbc0;flex-wrap:wrap;}}
+.tb{{padding:4px 10px;border-radius:6px;border:1.5px solid #c8dbc0;
+  background:#fff;color:#4a6657;font-size:.72rem;cursor:pointer;
+  font-family:inherit;transition:all .15s;white-space:nowrap;}}
+.tb:hover{{border-color:#4a7c59;color:#4a7c59;background:#f0f8f2;}}
+.tb.on{{border-color:#4a7c59;background:#dff0e2;color:#3a6246;font-weight:500;}}
+.sep{{width:1px;height:16px;background:#c8dbc0;margin:0 2px;flex-shrink:0;}}
+#zd{{font-size:.65rem;color:#7a9e88;min-width:34px;text-align:center;}}
+#hint{{font-size:.62rem;color:#7a9e88;flex:1;margin-left:4px;}}
+#st{{font-size:.62rem;color:#4a7c59;font-weight:500;}}
+#cw{{position:relative;overflow:hidden;background:#f8faf6;
+  background-image:radial-gradient(circle,#d4e6cc 1px,transparent 1px);
+  background-size:24px 24px;}}
+canvas{{display:block;}}
+#te{{position:absolute;display:none;background:rgba(255,255,255,.97);
+  color:#1e2e22;font-family:'DM Mono',monospace;resize:none;outline:none;
+  padding:6px;overflow:hidden;text-align:center;line-height:1.45;
+  border:2px solid #4a7c59;border-radius:6px;
+  box-shadow:0 3px 16px rgba(74,124,89,.18);}}
+#cc{{position:absolute;display:none;font-size:.55rem;color:#7a9e88;
+  pointer-events:none;text-align:center;background:transparent;}}
+#ah{{position:absolute;top:6px;right:10px;font-size:.65rem;color:#4a7c59;
+  background:rgba(74,124,89,.12);padding:3px 8px;border-radius:5px;
+  display:none;pointer-events:none;}}
+#data-out{{display:none;}}
+</style></head><body>
+<div id="tb">
+  <button class="tb on" id="bs" onclick="setTool('s')">↖ Sél.</button>
+  <button class="tb" id="br" onclick="setTool('r')">▭ Rect.</button>
+  <button class="tb" id="ba" onclick="setTool('a')">→ Flèche</button>
+  <div class="sep"></div>
+  <button class="tb" onclick="zoom(.15)">+</button>
+  <div id="zd">100%</div>
+  <button class="tb" onclick="zoom(-.15)">−</button>
+  <button class="tb" onclick="resetView()">⊡</button>
+  <div class="sep"></div>
+  <button class="tb" onclick="doUndo()">↩</button>
+  <button class="tb" onclick="doRedo()">↪</button>
+  <div class="sep"></div>
+  <button class="tb" id="bw" onclick="toggleW()">✎ OUI</button>
+  <div class="sep"></div>
+  <button class="tb" onclick="delSel()">🗑</button>
+  <div class="sep"></div>
+  <button class="tb" onclick="exportData()" style="background:#dff0e2;color:#3a6246;border-color:#4a7c59;">💾 Sauvegarder</button>
+  <span id="hint">Alt+drag=pan • Ctrl+Z=undo</span>
+  <span id="st"></span>
 </div>
+<div id="cw">
+  <canvas id="cv"></canvas>
+  <textarea id="te" maxlength="{MAX_CHARS}"></textarea>
+  <div id="cc"></div>
+  <div id="ah">→ Cliquer la cible</div>
+</div>
+<textarea id="data-out" readonly></textarea>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-const SCENE={sj};
-const MODE={json.dumps(mode)};
-const US=SCENE.unitScale;
+// ── State ──────────────────────────────────────────────────────────────────
+const cv=document.getElementById('cv');
+const ctx=cv.getContext('2d');
+const cw=document.getElementById('cw');
+const te=document.getElementById('te');
+const cc=document.getElementById('cc');
+const ah=document.getElementById('ah');
+const stEl=document.getElementById('st');
+const hintEl=document.getElementById('hint');
+const bw=document.getElementById('bw');
+const dataOut=document.getElementById('data-out');
 
-// ── Renderer ──────────────────────────────────────────────────────────────────
-const wrap=document.getElementById('wrap');
-const W=wrap.clientWidth, H={height};
-const renderer=new THREE.WebGLRenderer({{antialias:true}});
-renderer.setSize(W,H);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
-renderer.setClearColor(0xffffff,1);
-wrap.appendChild(renderer.domElement);
+const MC={MAX_CHARS};
+const FID="{fid}";
+const LOC="{loc}";
 
-const scene=new THREE.Scene();
-scene.background=new THREE.Color(0xffffff);
+let objs={objs_json};
+let tool='s';
+let sc=1,ox=60,oy=60;
+let selId=null;
+let eid=null;       // id de l'objet en cours d'édition dans le textarea
+let drag=false,dsx=0,dsy=0,dox=0,doy=0;
+let rsz=false,rh=null,rs=null;
+let drawing=false,drawSt={{x:0,y:0}},drawEnd={{x:0,y:0}};
+let pan=false,panX=0,panY=0,panOX=0,panOY=0;
+let asrc=null;
+let undoSt=[],redoSt=[];
+let idc=1;
+objs.forEach(o=>{{
+  const n=parseInt(String(o.id).replace(/[^0-9]/g,''))||0;
+  if(n>=idc)idc=n+1;
+}});
 
-const camera=new THREE.PerspectiveCamera(55,W/H,0.01,5000);
-camera.position.set(8,6,12);
-camera.lookAt(0,0,0);
-
-// ── Lights ────────────────────────────────────────────────────────────────────
-scene.add(new THREE.AmbientLight(0xffffff,1.0));
-const dl=new THREE.DirectionalLight(0xffffff,0.3);
-dl.position.set(10,20,10);
-scene.add(dl);
-
-// ── Orbit ─────────────────────────────────────────────────────────────────────
-let sph={{theta:0.6,phi:0.9,r:18}};
-let tgt=new THREE.Vector3();
-let isRD=false,isMD=false,lm={{x:0,y:0}};
-
-function applyCamera(){{
-  const sp=Math.sin(sph.phi),cp=Math.cos(sph.phi);
-  const st=Math.sin(sph.theta),ct=Math.cos(sph.theta);
-  camera.position.set(tgt.x+sph.r*sp*st, tgt.y+sph.r*cp, tgt.z+sph.r*sp*ct);
-  camera.lookAt(tgt);
+// ── Resize canvas ──────────────────────────────────────────────────────────
+function resize(){{
+  const tbH=document.getElementById('tb').offsetHeight;
+  cw.style.height=(window.innerHeight-tbH)+'px';
+  cv.width=cw.clientWidth;
+  cv.height=cw.clientHeight;
+  render();
 }}
-applyCamera();
+window.addEventListener('resize',resize);
+resize();
 
-const cv=renderer.domElement;
-cv.addEventListener('contextmenu',e=>e.preventDefault());
+// ── Coord helpers ──────────────────────────────────────────────────────────
+function tw(cx,cy){{return{{x:(cx-ox)/sc,y:(cy-oy)/sc}};}}
+function gp(e){{
+  const r=cv.getBoundingClientRect();
+  return{{x:e.clientX-r.left,y:e.clientY-r.top}};
+}}
+
+// ── Hit testing ────────────────────────────────────────────────────────────
+function inRect(o,wx,wy){{
+  return o.type==='r'&&wx>=o.x&&wx<=o.x+o.w&&wy>=o.y&&wy<=o.y+o.h;
+}}
+function inArrow(o,wx,wy){{
+  if(o.type!=='a')return false;
+  const dx=o.x2-o.x1,dy=o.y2-o.y1,L=Math.sqrt(dx*dx+dy*dy);
+  if(L<1)return false;
+  const t=((wx-o.x1)*dx+(wy-o.y1)*dy)/(L*L);
+  if(t<0||t>1)return false;
+  const px=o.x1+t*dx,py=o.y1+t*dy;
+  return Math.sqrt((wx-px)**2+(wy-py)**2)<8/sc;
+}}
+function hitAny(wx,wy){{
+  for(let i=objs.length-1;i>=0;i--)
+    if(inRect(objs[i],wx,wy)||inArrow(objs[i],wx,wy))return objs[i];
+  return null;
+}}
+function hitRect(wx,wy){{
+  for(let i=objs.length-1;i>=0;i--)
+    if(inRect(objs[i],wx,wy))return objs[i];
+  return null;
+}}
+function handles(o){{
+  if(o.type!=='r')return[];
+  return[
+    {{id:'se',x:o.x+o.w,y:o.y+o.h}},{{id:'e',x:o.x+o.w,y:o.y+o.h/2}},
+    {{id:'s',x:o.x+o.w/2,y:o.y+o.h}},{{id:'n',x:o.x+o.w/2,y:o.y}},
+    {{id:'nw',x:o.x,y:o.y}},{{id:'w',x:o.x,y:o.y+o.h/2}},
+  ];
+}}
+function hitHandle(o,wx,wy){{
+  const t=7/sc;
+  for(const h of handles(o))
+    if(Math.abs(wx-h.x)<t&&Math.abs(wy-h.y)<t)return h.id;
+  return null;
+}}
+function minSize(o){{
+  // Taille minimale pour contenir le texte actuel sans le couper.
+  // Police fixe 13px DM Mono ≈ 7.8px/char, lh=19.5px, padding=16px
+  if(!o.label||!o.label.length)return{{w:80,h:44}};
+  ctx.save();ctx.font='13px DM Mono,monospace';
+  // Largeur du mot le plus long
+  let mw=0;
+  o.label.split(' ').forEach(w=>{{const m=ctx.measureText(w).width;if(m>mw)mw=m;}});
+  ctx.restore();
+  const PAD=16;
+  const minW=Math.max(80,mw+PAD);
+  // Nombre de lignes si on wrap à minW
+  const charsPerLine=Math.max(1,Math.floor((minW-PAD)/7.8));
+  const nLines=Math.max(1,Math.ceil(o.label.length/charsPerLine));
+  const minH=Math.max(44,nLines*19.5+PAD);
+  return{{w:minW,h:minH}};
+}}
+
+// ── Undo/Redo ──────────────────────────────────────────────────────────────
+function pushU(){{
+  undoSt.push(JSON.stringify(objs));
+  if(undoSt.length>50)undoSt.shift();
+  redoSt=[];
+}}
+function doUndo(){{
+  if(!undoSt.length)return;
+  redoSt.push(JSON.stringify(objs));
+  objs=JSON.parse(undoSt.pop());
+  selId=null;render();
+}}
+function doRedo(){{
+  if(!redoSt.length)return;
+  undoSt.push(JSON.stringify(objs));
+  objs=JSON.parse(redoSt.pop());
+  selId=null;render();
+}}
+
+// ── Writable ───────────────────────────────────────────────────────────────
+function toggleW(){{
+  const o=objs.find(x=>x.id===selId);
+  if(!o||o.type!=='r')return;
+  o.w2=!o.w2;updateWBtn();render();
+}}
+function updateWBtn(){{
+  const o=objs.find(x=>x.id===selId);
+  bw.textContent='✎ '+((!o||o.type!=='r')?'—':o.w2?'NON':'OUI');
+}}
+
+// ── Render ─────────────────────────────────────────────────────────────────
+function render(){{
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.save();ctx.translate(ox,oy);ctx.scale(sc,sc);
+  // Arrows under rects
+  objs.filter(o=>o.type==='a').forEach(drawArrow);
+  objs.filter(o=>o.type==='r').forEach(drawRect);
+  // Draw preview
+  if(drawing){{
+    const w=drawEnd.x-drawSt.x,h=drawEnd.y-drawSt.y;
+    ctx.save();
+    ctx.strokeStyle='#4a7c59';ctx.fillStyle='rgba(74,124,89,.06)';
+    ctx.lineWidth=1.5/sc;ctx.setLineDash([5/sc,3/sc]);
+    rrPath(drawSt.x,drawSt.y,w,h,6/sc);ctx.fill();ctx.stroke();
+    ctx.restore();
+  }}
+  ctx.restore();
+  document.getElementById('zd').textContent=Math.round(sc*100)+'%';
+  // Update textarea overlay position if editing
+  if(eid!==null){{
+    const o=objs.find(x=>x.id===eid);
+    if(o)repositionTE(o);
+  }}
+}}
+
+function drawRect(o){{
+  const sel=(o.id===selId);
+  const editing=(o.id===eid);
+  ctx.save();
+  if(sel&&!editing){{ctx.shadowColor='rgba(74,124,89,.35)';ctx.shadowBlur=12/sc;}}
+  // Fill: transparent if editing (textarea overlay covers it)
+  ctx.fillStyle=editing?'rgba(255,255,255,0)':'#ffffff';
+  ctx.strokeStyle=sel||editing?'#4a7c59':(o.w2?'#a0b8a0':'#c8dbc0');
+  ctx.lineWidth=(sel||editing?2:1.5)/sc;
+  if(o.w2&&!sel){{ctx.setLineDash([4/sc,2/sc]);}}
+  ctx.beginPath();rrPath(o.x,o.y,o.w,o.h,8/sc);ctx.fill();ctx.stroke();
+  ctx.setLineDash([]);
+  // Text (only when not in textarea editor)
+  if(o.label&&!editing){{
+    ctx.save();
+    // Police FIXE 13px pour cohérence avec le textarea
+    const FS=13;
+    ctx.font=FS+'px DM Mono,monospace';
+    ctx.fillStyle='#1e2e22';ctx.textAlign='center';ctx.textBaseline='middle';
+    const PAD=16;  // padding horizontal intérieur (pixels monde)
+    const maxW=o.w-PAD;
+    const lines=wrapText(ctx,o.label,maxW);
+    const lh=FS*1.5,th=lines.length*lh;
+    const sy=o.y+o.h/2-th/2+lh/2;
+    ctx.save();
+    // Clip strict à l'intérieur de la forme (avec padding)
+    ctx.beginPath();
+    ctx.rect(o.x+PAD/2,o.y+PAD/2,o.w-PAD,o.h-PAD);
+    ctx.clip();
+    lines.forEach((l,i)=>ctx.fillText(l,o.x+o.w/2,sy+i*lh));
+    ctx.restore();
+    // Char counter when selected (en dehors du clip)
+    if(sel){{
+      const cnt=o.label.length;
+      const cap=maxCharsForRect(o.w,o.h);
+      ctx.font=(8/sc)+'px DM Mono,monospace';
+      ctx.fillStyle=cnt>=cap?'#c0392b':'rgba(122,158,136,.8)';
+      ctx.textAlign='center';ctx.textBaseline='top';
+      ctx.fillText(cnt+'/'+cap,o.x+o.w/2,o.y+o.h+3/sc);
+    }}
+    ctx.restore();
+  }}
+  // Handles
+  if(sel&&!editing){{
+    ctx.save();
+    handles(o).forEach(h=>{{
+      ctx.fillStyle='#4a7c59';ctx.strokeStyle='#fff';ctx.lineWidth=1/sc;
+      ctx.beginPath();ctx.arc(h.x,h.y,5/sc,0,Math.PI*2);ctx.fill();ctx.stroke();
+    }});
+    ctx.restore();
+  }}
+  ctx.restore();
+}}
+
+function drawArrow(o){{
+  const sel=(o.id===selId);
+  const ang=Math.atan2(o.y2-o.y1,o.x2-o.x1);
+  const AH=16/sc;
+  const ex=o.x2-Math.cos(ang)*AH*.6,ey=o.y2-Math.sin(ang)*AH*.6;
+  ctx.save();
+  const g=ctx.createLinearGradient(o.x1,o.y1,o.x2,o.y2);
+  g.addColorStop(0,sel?'#7ab88a':'#a8c8b0');
+  g.addColorStop(1,sel?'#4a7c59':'#6a9e7a');
+  ctx.strokeStyle=g;ctx.lineWidth=3/sc;ctx.lineCap='round';
+  ctx.beginPath();ctx.moveTo(o.x1,o.y1);ctx.lineTo(ex,ey);ctx.stroke();
+  ctx.fillStyle=sel?'#3a6246':'#5a8c6a';
+  ctx.beginPath();
+  ctx.moveTo(o.x2,o.y2);
+  ctx.lineTo(o.x2-AH*Math.cos(ang-.42),o.y2-AH*Math.sin(ang-.42));
+  ctx.lineTo(o.x2-AH*.5*Math.cos(ang),o.y2-AH*.5*Math.sin(ang));
+  ctx.lineTo(o.x2-AH*Math.cos(ang+.42),o.y2-AH*Math.sin(ang+.42));
+  ctx.closePath();ctx.fill();
+  if(sel){{
+    const mx=(o.x1+o.x2)/2,my=(o.y1+o.y2)/2;
+    ctx.fillStyle='rgba(74,124,89,.15)';
+    ctx.beginPath();ctx.arc(mx,my,7/sc,0,Math.PI*2);ctx.fill();
+  }}
+  ctx.restore();
+}}
+
+function rrPath(x,y,w,h,r){{
+  if(w<0){{x+=w;w=-w;}}if(h<0){{y+=h;h=-h;}}r=Math.min(r,w/2,h/2);
+  ctx.moveTo(x+r,y);ctx.lineTo(x+w-r,y);ctx.quadraticCurveTo(x+w,y,x+w,y+r);
+  ctx.lineTo(x+w,y+h-r);ctx.quadraticCurveTo(x+w,y+h,x+w-r,y+h);
+  ctx.lineTo(x+r,y+h);ctx.quadraticCurveTo(x,y+h,x,y+h-r);
+  ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);ctx.closePath();
+}}
+function wrapText(ctx,text,maxW){{
+  if(!text)return[''];
+  // Forcer une police cohérente avant de mesurer
+  ctx.font='13px DM Mono,monospace';
+  const words=text.split(' ');const lines=[];let line='';
+  for(const w of words){{
+    const t=line?line+' '+w:w;
+    if(ctx.measureText(t).width>maxW&&line){{lines.push(line);line=w;}}
+    else{{line=t;}}
+  }}
+  if(line)lines.push(line);return lines.length?lines:[''];
+}}
+
+// Calcule la limite de caractères pour un rectangle de taille donnée.
+// Police fixe DM Mono 13px : ~7.8px/char, line-height 19.5px, padding 16px H et V.
+function maxCharsForRect(w,h){{
+  const PAD=16;
+  const CHAR_W=7.8;   // largeur approx d'un caractère en pixels monde
+  const LINE_H=19.5;  // 13px * 1.5
+  const cols=Math.max(1,Math.floor((w-PAD)/CHAR_W));
+  const rows=Math.max(1,Math.floor((h-PAD)/LINE_H));
+  // Marge de sécurité 80% pour ne pas coller aux bords
+  return Math.max(10,Math.floor(cols*rows*0.80));
+}}
+
+// ── Textarea editor ────────────────────────────────────────────────────────
+function repositionTE(o){{
+  const cx=o.x*sc+ox,cy=o.y*sc+oy;
+  te.style.left=cx+'px';te.style.top=cy+'px';
+  te.style.width=(o.w*sc)+'px';te.style.height=(o.h*sc)+'px';
+  te.style.fontSize='13px';  // Police FIXE — cohérente avec le rendu canvas
+  te.style.lineHeight='1.5';
+  te.style.padding='8px';
+  // Limite dynamique
+  const cap=maxCharsForRect(o.w,o.h);
+  te.maxLength=cap;
+  const cnt=te.value.length;
+  cc.style.left=cx+'px';cc.style.top=(cy+o.h*sc+3)+'px';
+  cc.style.width=(o.w*sc)+'px';
+  cc.style.color=cnt>=cap?'#c0392b':'#7a9e88';
+  cc.textContent=cnt+'/'+cap;
+}}
+function openTE(o){{
+  if(o.w2)return;  // not writable
+  eid=o.id;
+  const cap=maxCharsForRect(o.w,o.h);
+  te.value=o.label||'';
+  te.maxLength=cap;  // Limite dynamique selon taille de la forme
+  te.style.display='block';
+  cc.style.display='block';
+  repositionTE(o);
+  te.focus();
+  const l=te.value.length;te.setSelectionRange(l,l);
+  render();
+}}
+function closeTE(){{
+  if(eid===null)return;
+  const o=objs.find(x=>x.id===eid);
+  if(o)o.label=te.value;
+  eid=null;
+  te.style.display='none';
+  cc.style.display='none';
+  render();
+}}
+te.addEventListener('input',()=>{{
+  const o=objs.find(x=>x.id===eid);
+  if(o){{o.label=te.value;repositionTE(o);render();}}
+}});
+// Never close on blur — only on explicit Escape or canvas click outside
+te.addEventListener('blur',()=>{{}});
+te.addEventListener('keydown',e=>{{
+  if(e.key==='Escape')closeTE();
+  e.stopPropagation();
+}});
+
+// ── Tool switching ─────────────────────────────────────────────────────────
+function setTool(t){{
+  tool=t;asrc=null;ah.style.display='none';drawing=false;
+  ['bs','br','ba'].forEach(id=>document.getElementById(id).classList.remove('on'));
+  const bid=document.getElementById('b'+t);if(bid)bid.classList.add('on');
+  const curs={{s:'default',r:'crosshair',a:'crosshair'}};
+  cv.style.cursor=curs[t]||'default';
+  const hints={{
+    s:'Clic: sél | 2e clic: écrire | Drag: déplacer | Alt+drag: pan',
+    r:'Glisser pour créer un rectangle | Clic existant: sélectionner',
+    a:'Clic source → clic cible',
+  }};
+  hintEl.textContent=hints[t]||'';
+}}
+
+// ── Mouse events ───────────────────────────────────────────────────────────
 cv.addEventListener('mousedown',e=>{{
-  if(e.button===2)isRD=true;
-  if(e.button===1){{isMD=true;e.preventDefault();}}
-  lm={{x:e.clientX,y:e.clientY}};
-}});
-window.addEventListener('mouseup',()=>{{isRD=false;isMD=false;}});
-window.addEventListener('mousemove',e=>{{
-  const dx=e.clientX-lm.x,dy=e.clientY-lm.y;
-  lm={{x:e.clientX,y:e.clientY}};
-  if(isRD){{
-    sph.theta-=dx*0.005;
-    sph.phi=Math.max(0.05,Math.min(Math.PI-0.05,sph.phi+dy*0.005));
-    applyCamera();
+  e.preventDefault();
+  const cp=gp(e),wp=tw(cp.x,cp.y);
+
+  // Alt + drag = pan (toujours)
+  if(e.altKey||e.button===1){{
+    // Close editor first if clicking outside
+    if(eid!==null){{
+      const eo=objs.find(x=>x.id===eid);
+      if(!eo||!inRect(eo,wp.x,wp.y))closeTE();
+    }}
+    pan=true;panX=cp.x;panY=cp.y;panOX=ox;panOY=oy;
+    cv.style.cursor='grabbing';return;
   }}
-  if(isMD){{
-    const sp=sph.r*0.0008;
-    const right=new THREE.Vector3();
-    right.crossVectors(camera.getWorldDirection(new THREE.Vector3()),camera.up).normalize();
-    tgt.addScaledVector(right,-dx*sp);
-    tgt.addScaledVector(camera.up,dy*sp);
-    applyCamera();
+  if(e.button!==0)return;
+
+  // Si éditeur ouvert, clic hors de la forme = fermer éditeur
+  if(eid!==null){{
+    const eo=objs.find(x=>x.id===eid);
+    if(eo&&inRect(eo,wp.x,wp.y)){{
+      // Clic DANS la forme en cours d'édition → laisser le textarea gérer
+      return;
+    }}
+    closeTE();
+    // Continue le traitement du clic
   }}
-  updateCoords(e);
+
+  if(tool==='s'){{
+    // Resize handles d'abord
+    const sel=selId?objs.find(o=>o.id===selId):null;
+    if(sel&&sel.type==='r'){{
+      const h=hitHandle(sel,wp.x,wp.y);
+      if(h){{pushU();rsz=true;rh=h;dsx=wp.x;dsy=wp.y;rs={{x:sel.x,y:sel.y,w:sel.w,h:sel.h}};return;}}
+    }}
+    const hit=hitAny(wp.x,wp.y);
+    if(hit){{
+      if(hit.type==='r'){{
+        if(selId===hit.id){{
+          // 2e clic sur même objet → ouvrir éditeur
+          openTE(hit);return;
+        }}
+        pushU();selId=hit.id;updateWBtn();
+        drag=true;dsx=wp.x;dsy=wp.y;dox=hit.x;doy=hit.y;
+      }}else{{
+        selId=hit.id;updateWBtn();
+      }}
+    }}else{{
+      // Clic zone vide = déselectionner seulement (PAS de pan ici)
+      selId=null;updateWBtn();
+    }}
+    render();
+
+  }}else if(tool==='r'){{
+    const hit=hitAny(wp.x,wp.y);
+    if(hit){{
+      // Clic sur objet existant en mode rect → sélectionner et basculer
+      selId=hit.id;updateWBtn();setTool('s');
+      if(hit.type==='r')openTE(hit);
+      render();return;
+    }}
+    // Commencer à dessiner un rectangle
+    drawing=true;drawSt={{x:wp.x,y:wp.y}};drawEnd={{x:wp.x,y:wp.y}};
+
+  }}else if(tool==='a'){{
+    const hit=hitRect(wp.x,wp.y);
+    if(!hit){{asrc=null;ah.style.display='none';return;}}
+    if(!asrc){{
+      asrc=hit.id;selId=hit.id;updateWBtn();
+      ah.style.display='block';render();
+    }}else if(asrc!==hit.id){{
+      pushU();
+      const src=objs.find(o=>o.id===asrc);
+      objs.push({{
+        id:'a'+(idc++),type:'a',
+        x1:src.x+src.w/2,y1:src.y+src.h/2,
+        x2:hit.x+hit.w/2,y2:hit.y+hit.h/2,
+        srcId:asrc,dstId:hit.id,label:'',
+      }});
+      asrc=null;ah.style.display='none';render();
+    }}
+  }}
 }});
+
+cv.addEventListener('mousemove',e=>{{
+  const cp=gp(e),wp=tw(cp.x,cp.y);
+  if(pan){{ox=panOX+(cp.x-panX);oy=panOY+(cp.y-panY);render();return;}}
+  if(drag&&selId){{
+    const o=objs.find(x=>x.id===selId);
+    if(o&&o.type==='r'){{
+      o.x=dox+(wp.x-dsx);o.y=doy+(wp.y-dsy);
+      syncArrows(o);render();
+    }}
+  }}
+  if(rsz&&selId){{
+    const o=objs.find(x=>x.id===selId);
+    if(o){{
+      const ms=minSize(o),dx=wp.x-dsx,dy=wp.y-dsy;
+      if(rh.includes('e'))o.w=Math.max(ms.w,rs.w+dx);
+      if(rh.includes('s'))o.h=Math.max(ms.h,rs.h+dy);
+      if(rh.includes('w')){{const nw=Math.max(ms.w,rs.w-dx);o.x=rs.x+(rs.w-nw);o.w=nw;}}
+      if(rh.includes('n')){{const nh=Math.max(ms.h,rs.h-dy);o.y=rs.y+(rs.h-nh);o.h=nh;}}
+      syncArrows(o);
+      if(eid===o.id)repositionTE(o);
+      render();
+    }}
+  }}
+  if(drawing){{drawEnd={{x:wp.x,y:wp.y}};render();}}
+}});
+
+cv.addEventListener('mouseup',e=>{{
+  cv.style.cursor=tool==='s'?'default':'crosshair';
+  if(pan){{pan=false;return;}}
+  if(drawing){{
+    drawing=false;
+    const w=drawEnd.x-drawSt.x,h=drawEnd.y-drawSt.y;
+    if(Math.abs(w)>15&&Math.abs(h)>12){{
+      pushU();
+      const o={{
+        id:'r'+(idc++),type:'r',
+        x:w>0?drawSt.x:drawSt.x+w,
+        y:h>0?drawSt.y:drawSt.y+h,
+        w:Math.abs(w),h:Math.abs(h),
+        label:'',w2:false,
+      }};
+      objs.push(o);selId=o.id;updateWBtn();
+      render();
+      setTool('s');
+      openTE(o);  // Ouvrir directement l'éditeur après création
+    }}else{{
+      render();
+    }}
+  }}
+  if(drag){{drag=false;}}
+  if(rsz){{rsz=false;}}
+}});
+
+// Frappe clavier directe sur objet sélectionné
+document.addEventListener('keydown',e=>{{
+  if(e.target!==document.body)return;
+  if(e.key==='Delete'||e.key==='Backspace'){{delSel();return;}}
+  if(e.key==='Escape'){{
+    if(eid!==null)closeTE();
+    else{{selId=null;updateWBtn();render();}}
+    return;
+  }}
+  if(e.key==='z'&&(e.ctrlKey||e.metaKey)&&!e.shiftKey){{doUndo();return;}}
+  if(e.key==='y'&&(e.ctrlKey||e.metaKey)){{doRedo();return;}}
+  if(e.key==='z'&&(e.ctrlKey||e.metaKey)&&e.shiftKey){{doRedo();return;}}
+  // Frappe directe → ouvrir éditeur et ajouter caractère
+  if(selId&&e.key.length===1&&!e.ctrlKey&&!e.metaKey){{
+    const o=objs.find(x=>x.id===selId);
+    if(o&&o.type==='r'&&!o.w2){{
+      if((o.label||'').length>=maxCharsForRect(o.w,o.h))return;
+      openTE(o);
+      te.value=(o.label||'')+e.key;
+      o.label=te.value;
+      const l=te.value.length;te.setSelectionRange(l,l);
+      repositionTE(o);render();
+    }}
+  }}
+}});
+
+// Zoom
 cv.addEventListener('wheel',e=>{{
   e.preventDefault();
-  sph.r=Math.max(0.3,Math.min(800,sph.r*(1+e.deltaY*0.001)));
-  applyCamera();
+  const cp=gp(e),d=e.deltaY<0?.12:-.12;
+  const ns=Math.max(.08,Math.min(6,sc+d));
+  ox=cp.x-(cp.x-ox)*(ns/sc);oy=cp.y-(cp.y-oy)*(ns/sc);
+  sc=ns;render();
 }},{{passive:false}});
 
-// ── Grid (gris clair) ─────────────────────────────────────────────────────────
-if(SCENE.showGrid){{
-  const g1=new THREE.GridHelper(200,200,0xe0e0e0,0xe0e0e0);
-  g1.material.transparent=true;g1.material.opacity=0.7;
-  scene.add(g1);
-  const g2=new THREE.GridHelper(200,20,0xbbbbbb,0xbbbbbb);
-  scene.add(g2);
+function zoom(d){{
+  const cx=cv.width/2,cy=cv.height/2;
+  const ns=Math.max(.08,Math.min(6,sc+d));
+  ox=cx-(cx-ox)*(ns/sc);oy=cy-(cy-oy)*(ns/sc);
+  sc=ns;render();
+}}
+function resetView(){{sc=1;ox=60;oy=60;render();}}
+
+function delSel(){{
+  if(!selId)return;
+  if(eid!==null)closeTE();
+  pushU();
+  objs=objs.filter(o=>o.id!==selId&&o.srcId!==selId&&o.dstId!==selId);
+  selId=null;updateWBtn();render();
 }}
 
-// ── Axes gris ─────────────────────────────────────────────────────────────────
-if(SCENE.showAxes){{
-  const L=3;
-  const mat=new THREE.LineBasicMaterial({{color:0x999999}});
-  [[[0,0,0],[L,0,0]],[[0,0,0],[0,L,0]],[[0,0,0],[0,0,L]]].forEach(pts=>{{
-    scene.add(new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints(pts.map(p=>new THREE.Vector3(...p))),
-      mat
-    ));
-  }});
-  // Petites sphères aux extrémités
-  const tg=new THREE.SphereGeometry(0.04,6,4);
-  const tm=new THREE.MeshBasicMaterial({{color:0xaaaaaa}});
-  [[L,0,0],[0,L,0],[0,0,L]].forEach(p=>{{
-    const m=new THREE.Mesh(tg,tm);m.position.set(...p);scene.add(m);
+function syncArrows(rect){{
+  objs.filter(o=>o.type==='a').forEach(a=>{{
+    const s=objs.find(x=>x.id===a.srcId);
+    const d=objs.find(x=>x.id===a.dstId);
+    if(s){{a.x1=s.x+s.w/2;a.y1=s.y+s.h/2;}}
+    if(d){{a.x2=d.x+d.w/2;a.y2=d.y+d.h/2;}}
   }});
 }}
 
-// ── Matériaux ─────────────────────────────────────────────────────────────────
-const MAT={{
-  pt:    new THREE.MeshPhongMaterial({{color:0x111111,shininess:10}}),
-  ptSel: new THREE.MeshPhongMaterial({{color:0xf59e0b,shininess:60,emissive:0x3d2900}}),
-  seg:   new THREE.LineBasicMaterial({{color:0x555555}}),
-  segSel:new THREE.LineBasicMaterial({{color:0x1a73e8}}),
-  snap:  new THREE.MeshBasicMaterial({{color:0x1a73e8,transparent:true,opacity:0.8}}),
+// ── Export ─────────────────────────────────────────────────────────────────
+function exportData(){{
+  if(eid!==null)closeTE();
+  const rows=objs.map(o=>{{
+    let coords={{}};
+    if(o.type==='r')coords={{x:o.x,y:o.y,w:o.w,h:o.h}};
+    else if(o.type==='a')coords={{x1:o.x1,y1:o.y1,x2:o.x2,y2:o.y2,srcId:o.srcId,dstId:o.dstId}};
+    return{{
+      object_id:o.id,
+      type:o.type==='r'?'rectangle':'arrow',
+      label:o.label||'',
+      coords:JSON.stringify(coords),
+      writable:o.w2?'false':'true',
+    }};
+  }});
+  const payload=JSON.stringify({{fid:FID,loc:LOC,rows}});
+  dataOut.value=payload;
+  // Essayer postMessage vers parent Streamlit
+  try{{window.parent.postMessage({{mapdata:payload}},'*');}}catch(_){{}}
+  stEl.textContent='✓ Prêt';setTimeout(()=>stEl.textContent='',3000);
+  // Sauvegarder aussi dans sessionStorage comme backup
+  try{{sessionStorage.setItem('map_'+FID,payload);}}catch(_){{}}
+}}
+
+// Auto-export initial
+window.getMapData=function(){{
+  exportData();return dataOut.value;
 }};
-const ptGeo=new THREE.SphereGeometry(0.06,10,8);
 
-// ── Build scene ───────────────────────────────────────────────────────────────
-const objGroups={{}};
-
-function buildScene(data){{
-  Object.values(objGroups).forEach(g=>scene.remove(g));
-  Object.keys(objGroups).forEach(k=>delete objGroups[k]);
-
-  data.objects.forEach(obj=>{{
-    const g=new THREE.Group();
-    g.position.set(obj.pos.x*US,obj.pos.y*US,obj.pos.z*US);
-    g.quaternion.set(obj.rot.x,obj.rot.y,obj.rot.z,obj.rot.w);
-    g.scale.set(obj.scl.x,obj.scl.y,obj.scl.z);
-    g.userData={{type:'object',id:obj.id,name:obj.name}};
-
-    const ptMap={{}};
-    obj.points.forEach(p=>{{ ptMap[p.id]=p; }});
-
-    // Points (object designer uniquement)
-    if(MODE==='object_designer'){{
-      obj.points.forEach(p=>{{
-        const mat=p.sel?MAT.ptSel:MAT.pt;
-        const m=new THREE.Mesh(ptGeo,mat.clone());
-        m.position.set(p.x*US,p.y*US,p.z*US);
-        m.userData={{type:'point',id:p.id,oid:obj.id}};
-        g.add(m);
-      }});
-    }}
-
-    // Segments
-    obj.segments.forEach(s=>{{
-      const pa=ptMap[s.a],pb=ptMap[s.b];
-      if(!pa||!pb) return;
-      const mat=obj.sel?MAT.segSel:MAT.seg;
-      const line=new THREE.Line(
-        new THREE.BufferGeometry().setFromPoints([
-          new THREE.Vector3(pa.x*US,pa.y*US,pa.z*US),
-          new THREE.Vector3(pb.x*US,pb.y*US,pb.z*US),
-        ]),
-        mat.clone()
-      );
-      line.userData={{type:'segment',id:s.id,oid:obj.id}};
-      g.add(line);
-    }});
-
-    // Sélection : bounding box bleue
-    if(obj.sel && obj.points.length>0){{
-      const bb=new THREE.Box3();
-      obj.points.forEach(p=>bb.expandByPoint(new THREE.Vector3(p.x*US,p.y*US,p.z*US)));
-      if(!bb.isEmpty()){{
-        bb.min.subScalar(0.1);bb.max.addScalar(0.1);
-        g.add(new THREE.Box3Helper(bb,0x1a73e8));
-      }}
-    }}
-
-    // Plan editor : proxy invisible pour le picking
-    if(MODE==='plan_editor'){{
-      let bb=new THREE.Box3();
-      if(obj.points.length>0){{
-        obj.points.forEach(p=>bb.expandByPoint(new THREE.Vector3(p.x*US,p.y*US,p.z*US)));
-      }}else{{
-        bb.set(new THREE.Vector3(-0.3,-0.3,-0.3),new THREE.Vector3(0.3,0.3,0.3));
-      }}
-      bb.min.subScalar(0.2);bb.max.addScalar(0.2);
-      const sz=new THREE.Vector3();bb.getSize(sz);
-      const ct=new THREE.Vector3();bb.getCenter(ct);
-      const proxy=new THREE.Mesh(
-        new THREE.BoxGeometry(sz.x,sz.y,sz.z),
-        new THREE.MeshBasicMaterial({{visible:false,side:THREE.DoubleSide}})
-      );
-      proxy.position.copy(ct);
-      proxy.userData={{type:'object',id:obj.id,name:obj.name}};
-      g.add(proxy);
-    }}
-
-    objGroups[obj.id]=g;
-    scene.add(g);
-  }});
-}}
-buildScene(SCENE);
-
-// ── Snap (object designer) ────────────────────────────────────────────────────
-if(SCENE.snap && MODE==='object_designer'){{
-  const snapSph=new THREE.Mesh(new THREE.SphereGeometry(0.09,10,8),MAT.snap);
-  snapSph.visible=false;
-  scene.add(snapSph);
-  const allPts=[];
-  SCENE.objects.forEach(o=>o.points.forEach(p=>{{
-    allPts.push({{
-      w:new THREE.Vector3((o.pos.x+p.x)*US,(o.pos.y+p.y)*US,(o.pos.z+p.z)*US),
-      id:p.id,oid:o.id
-    }});
-  }}));
-  const gp=new THREE.Plane(new THREE.Vector3(0,1,0),0);
-  window.addEventListener('mousemove',e=>{{
-    const r=cv.getBoundingClientRect();
-    const m=new THREE.Vector2(((e.clientX-r.left)/W)*2-1,-((e.clientY-r.top)/H)*2+1);
-    const ray=new THREE.Raycaster();ray.setFromCamera(m,camera);
-    const h=new THREE.Vector3();ray.ray.intersectPlane(gp,h);
-    let near=null,minD=SCENE.snapDist*US;
-    allPts.forEach(ap=>{{const d=h.distanceTo(ap.w);if(d<minD){{minD=d;near=ap;}}}});
-    if(near){{snapSph.position.copy(near.w);snapSph.visible=true;}}
-    else snapSph.visible=false;
-  }});
-}}
-
-// ── Coords ────────────────────────────────────────────────────────────────────
-const gndPl=new THREE.Plane(new THREE.Vector3(0,1,0),0);
-const coordDiv=document.getElementById('coords');
-const statusDiv=document.getElementById('status');
-
-function updateCoords(e){{
-  const r=cv.getBoundingClientRect();
-  const m=new THREE.Vector2(((e.clientX-r.left)/W)*2-1,-((e.clientY-r.top)/H)*2+1);
-  const ray=new THREE.Raycaster();ray.setFromCamera(m,camera);
-  const h=new THREE.Vector3();
-  if(ray.ray.intersectPlane(gndPl,h)){{
-    coordDiv.textContent=`X: ${{(h.x/US).toFixed(1)}} · Y: ${{(h.y/US).toFixed(1)}} · Z: ${{(h.z/US).toFixed(1)}} cm`;
-  }}
-}}
-
-// ── Picking ───────────────────────────────────────────────────────────────────
-const pickRay=new THREE.Raycaster();
-pickRay.params.Line={{threshold:0.06}};
-
-cv.addEventListener('click',e=>{{
-  if(isRD) return;
-  const r=cv.getBoundingClientRect();
-  const m=new THREE.Vector2(((e.clientX-r.left)/W)*2-1,-((e.clientY-r.top)/H)*2+1);
-  pickRay.setFromCamera(m,camera);
-  const tgts=[];
-  Object.values(objGroups).forEach(g=>g.traverse(c=>{{if(c.userData&&c.userData.type)tgts.push(c);}}));
-  const hits=pickRay.intersectObjects(tgts,false);
-  if(hits.length>0){{
-    const ud=hits[0].object.userData;
-    // Plan editor : on remonte toujours à l'objet parent
-    const payload=(MODE==='plan_editor')
-      ?{{type:'object',id:ud.oid||ud.id,name:ud.name||''}}
-      :ud;
-    window.parent.postMessage({{src:'3ds',evt:'select',payload,multi:e.shiftKey}},'*');
-    statusDiv.textContent='Sélectionné : '+payload.type+' #'+payload.id;
-  }}else{{
-    window.parent.postMessage({{src:'3ds',evt:'deselect'}},'*');
-    statusDiv.textContent='Prêt';
-  }}
-}});
-
-// ── Render loop ───────────────────────────────────────────────────────────────
-(function loop(){{ requestAnimationFrame(loop); renderer.render(scene,camera); }})();
-
-// ── Resize ────────────────────────────────────────────────────────────────────
-new ResizeObserver(()=>{{
-  const nw=wrap.clientWidth;
-  renderer.setSize(nw,{height});
-  camera.aspect=nw/{height};
-  camera.updateProjectionMatrix();
-}}).observe(wrap);
-</script>
-</body></html>"""
-
-    st.markdown('<div class="viewer-wrap">', unsafe_allow_html=True)
-    st_html(viewer_html, height=height + 4, scrolling=False)
-    st.markdown("</div>", unsafe_allow_html=True)
+render();
+</script></body></html>"""
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PLAN EDITOR — delta-based, déplacements illimités
-# ─────────────────────────────────────────────────────────────────────────────
+def render_map():
+    ds = get_ds()
+    item = st.session_state.get("current_item")
+    if not item: go_back(); st.rerun(); return
+    fid = item["file_id"]
 
-def _obj_idx(obj_df, oid):
-    m = obj_df.index[obj_df["object_id"] == oid]
-    return m[0] if len(m) else None
+    df = ds.ld_map(fid)
+    if df is None or df.empty:
+        st.error("Map introuvable."); go_back(); st.rerun(); return
 
-
-def panel_plan_editor(obj_df, pts_df, seg_df, sel_oid):
-
-    if sel_oid is None:
-        st.markdown(
-            '<div class="info-box">'
-            '👆 Sélectionnez un objet dans la vue 3D (clic gauche) ou dans la liste à gauche.<br><br>'
-            '<b>Navigation 3D :</b><br>'
-            '• <code>Clic droit + glisser</code> — rotation caméra<br>'
-            '• <code>Molette + glisser</code> — déplacer la vue (pan)<br>'
-            '• <code>Molette</code> — zoom avant / arrière<br>'
-            '• <code>Clic gauche</code> — sélectionner un objet'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    row = obj_df[obj_df["object_id"] == sel_oid]
-    if row.empty:
-        return
-    obj = row.iloc[0]
-
-    px, py, pz = float(obj["pos_x"]), float(obj["pos_y"]), float(obj["pos_z"])
-    qx, qy, qz, qw = float(obj["rot_x"]), float(obj["rot_y"]), float(obj["rot_z"]), float(obj["rot_w"])
-    sx, sy, sz = float(obj["scale_x"]), float(obj["scale_y"]), float(obj["scale_z"])
-    ex, ey, ez = quat_to_euler(qx, qy, qz, qw)
-
-    n_pts  = len(pts_df[pts_df["object_id"] == sel_oid]) if not pts_df.empty else 0
-    n_segs = len(seg_df[seg_df["object_id"]  == sel_oid]) if not seg_df.empty else 0
-
-    # En-tête
-    st.markdown(
-        f'<div class="metric-row">'
-        f'<div class="metric-card"><div class="metric-val">{obj["name"]}</div><div class="metric-lbl">Objet</div></div>'
-        f'<div class="metric-card"><div class="metric-val">{n_pts}</div><div class="metric-lbl">Points</div></div>'
-        f'<div class="metric-card"><div class="metric-val">{n_segs}</div><div class="metric-lbl">Segments</div></div>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
-
-    # Affichage position/rotation couranteS
-    st.markdown(
-        f'<div class="pos-display">'
-        f'<div class="pos-axis"><span>X</span>{px:.1f} cm</div>'
-        f'<div class="pos-axis"><span>Y</span>{py:.1f} cm</div>'
-        f'<div class="pos-axis"><span>Z</span>{pz:.1f} cm</div>'
-        f'<div class="pos-axis" style="margin-left:10px">'
-        f'<span>RX</span>{ex:.1f}° &nbsp;<span>RY</span>{ey:.1f}° &nbsp;<span>RZ</span>{ez:.1f}°'
-        f'</div></div>',
-        unsafe_allow_html=True,
-    )
-
-    t_move, t_rot, t_scl, t_abs, t_del = st.tabs(
-        ["🕹 Déplacer", "🔄 Pivoter", "📐 Échelle", "📍 Position exacte", "🗑 Supprimer"]
-    )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # DÉPLACER
-    # ══════════════════════════════════════════════════════════════════════════
-    with t_move:
-        c1, c2 = st.columns([3, 1])
-        step = c1.number_input(
-            "Pas de déplacement (cm)", min_value=0.1, max_value=9999.0,
-            value=st.session_state["move_step"], step=0.1, format="%.1f", key="v_move_step"
-        )
-        st.session_state["move_step"] = step
-        c2.markdown(f"<div style='padding-top:28px;font-size:10px;color:#888'>{step:.1f} cm</div>", unsafe_allow_html=True)
-
-        def _mv(dx=0.0, dy=0.0, dz=0.0):
-            idx = _obj_idx(obj_df, sel_oid)
-            if idx is None: return
-            df2 = obj_df.copy()
-            df2.at[idx,"pos_x"] += dx
-            df2.at[idx,"pos_y"] += dy
-            df2.at[idx,"pos_z"] += dz
-            save_parquet(df2, OBJ_KEY)
-            st.rerun()
-
-        st.markdown('<p class="move-lbl">Plan horizontal  X / Z</p>', unsafe_allow_html=True)
-
-        _, top_c, _ = st.columns([1,1,1])
-        if top_c.button("⬆  −Z", key="m_mz", use_container_width=True):
-            _mv(dz=-step)
-
-        lc, mc, rc = st.columns(3)
-        if lc.button("◀  −X", key="m_mx", use_container_width=True):
-            _mv(dx=-step)
-        mc.markdown(
-            f"<div style='text-align:center;padding:10px 0;border:1px solid #21262d;"
-            f"border-radius:5px;font-size:10px;color:#888'>X {px:.1f}<br>Z {pz:.1f}</div>",
-            unsafe_allow_html=True,
-        )
-        if rc.button("▶  +X", key="m_px", use_container_width=True):
-            _mv(dx=+step)
-
-        _, bot_c, _ = st.columns([1,1,1])
-        if bot_c.button("⬇  +Z", key="m_pz", use_container_width=True):
-            _mv(dz=+step)
-
-        st.markdown('<p class="move-lbl">Vertical  Y</p>', unsafe_allow_html=True)
-        yc1, yc2, yc3 = st.columns(3)
-        if yc1.button("▲  +Y", key="m_py", use_container_width=True):
-            _mv(dy=+step)
-        yc2.markdown(
-            f"<div style='text-align:center;padding:6px 0;font-size:10px;color:#888'>Y {py:.1f} cm</div>",
-            unsafe_allow_html=True,
-        )
-        if yc3.button("▼  −Y", key="m_my", use_container_width=True):
-            _mv(dy=-step)
-
-        st.markdown(
-            '<div class="info-box" style="margin-top:8px">'
-            '💡 Chaque clic applique un déplacement de <code>pas</code> cm.<br>'
-            'Cliquez autant de fois que souhaité — les déplacements sont cumulatifs et illimités.'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # PIVOTER
-    # ══════════════════════════════════════════════════════════════════════════
-    with t_rot:
-        c1, c2 = st.columns([3, 1])
-        rstep = c1.number_input(
-            "Pas de rotation (°)", min_value=0.1, max_value=180.0,
-            value=st.session_state["rot_step"], step=0.5, format="%.1f", key="v_rot_step"
-        )
-        st.session_state["rot_step"] = rstep
-        c2.markdown(f"<div style='padding-top:28px;font-size:10px;color:#888'>{rstep:.1f}°</div>", unsafe_allow_html=True)
-
-        def _rot(axis, deg):
-            idx = _obj_idx(obj_df, sel_oid)
-            if idx is None: return
-            df2 = obj_df.copy()
-            nx, ny, nz, nw = compose_rot(
-                float(df2.at[idx,"rot_x"]), float(df2.at[idx,"rot_y"]),
-                float(df2.at[idx,"rot_z"]), float(df2.at[idx,"rot_w"]),
-                axis, deg
-            )
-            df2.at[idx,"rot_x"] = nx; df2.at[idx,"rot_y"] = ny
-            df2.at[idx,"rot_z"] = nz; df2.at[idx,"rot_w"] = nw
-            save_parquet(df2, OBJ_KEY)
-            st.rerun()
-
-        st.markdown('<p class="move-lbl">Axe Y — pivot horizontal</p>', unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        if c1.button(f"↺  Y − {rstep:.1f}°", key="ry_m", use_container_width=True):
-            _rot("y", -rstep)
-        if c2.button(f"↻  Y + {rstep:.1f}°", key="ry_p", use_container_width=True):
-            _rot("y", +rstep)
-
-        st.markdown('<p class="move-lbl">Axe X — inclinaison avant / arrière</p>', unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        if c1.button(f"↺  X − {rstep:.1f}°", key="rx_m", use_container_width=True):
-            _rot("x", -rstep)
-        if c2.button(f"↻  X + {rstep:.1f}°", key="rx_p", use_container_width=True):
-            _rot("x", +rstep)
-
-        st.markdown('<p class="move-lbl">Axe Z — roulis gauche / droite</p>', unsafe_allow_html=True)
-        c1, c2 = st.columns(2)
-        if c1.button(f"↺  Z − {rstep:.1f}°", key="rz_m", use_container_width=True):
-            _rot("z", -rstep)
-        if c2.button(f"↻  Z + {rstep:.1f}°", key="rz_p", use_container_width=True):
-            _rot("z", +rstep)
-
-        st.markdown(
-            f'<div class="info-box" style="margin-top:8px">'
-            f'Rotation actuelle : <b>X {ex:.1f}°</b> &nbsp; <b>Y {ey:.1f}°</b> &nbsp; <b>Z {ez:.1f}°</b><br>'
-            f'<br>💡 Maintenez un rythme de clics rapides pour pivoter en continu.<br>'
-            f'Utilisez un pas de 45° pour des angles nets, 1° pour la précision.</div>',
-            unsafe_allow_html=True,
-        )
-
-        if st.button("⟲ Réinitialiser rotation", key="rot_reset"):
-            idx = _obj_idx(obj_df, sel_oid)
-            if idx is not None:
-                df2 = obj_df.copy()
-                df2.at[idx,"rot_x"]=0.0; df2.at[idx,"rot_y"]=0.0
-                df2.at[idx,"rot_z"]=0.0; df2.at[idx,"rot_w"]=1.0
-                save_parquet(df2, OBJ_KEY)
-                st.rerun()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # ÉCHELLE
-    # ══════════════════════════════════════════════════════════════════════════
-    with t_scl:
-        st.markdown(
-            f'<div class="pos-display">'
-            f'<div class="pos-axis"><span>SX</span>{sx:.2f}</div>'
-            f'<div class="pos-axis"><span>SY</span>{sy:.2f}</div>'
-            f'<div class="pos-axis"><span>SZ</span>{sz:.2f}</div>'
-            f'</div>', unsafe_allow_html=True,
-        )
-
-        sstep = st.number_input(
-            "Pas d'échelle", min_value=0.01, max_value=100.0,
-            value=st.session_state["scale_step"], step=0.05, format="%.2f", key="v_scale_step"
-        )
-        st.session_state["scale_step"] = sstep
-        uniform = st.checkbox("Uniforme (X=Y=Z)", value=True, key="scl_uni")
-
-        def _scl(ds, axis=None):
-            idx = _obj_idx(obj_df, sel_oid)
-            if idx is None: return
-            df2 = obj_df.copy()
-            axes = ["scale_x","scale_y","scale_z"] if uniform else ([f"scale_{axis}"] if axis else ["scale_x"])
-            for a in axes:
-                df2.at[idx,a] = max(0.01, float(df2.at[idx,a]) + ds)
-            save_parquet(df2, OBJ_KEY)
-            st.rerun()
-
-        if uniform:
-            c1, c2 = st.columns(2)
-            if c1.button(f"▲  +{sstep:.2f} (uniforme)", key="su_p", use_container_width=True):
-                _scl(+sstep)
-            if c2.button(f"▼  −{sstep:.2f} (uniforme)", key="su_m", use_container_width=True):
-                _scl(-sstep)
-        else:
-            for lbl2, ax in [("X","x"),("Y","y"),("Z","z")]:
-                c1, c2 = st.columns(2)
-                if c1.button(f"▲  {lbl2}+", key=f"s{ax}p", use_container_width=True):
-                    _scl(+sstep, ax)
-                if c2.button(f"▼  {lbl2}−", key=f"s{ax}m", use_container_width=True):
-                    _scl(-sstep, ax)
-
-        st.divider()
-        st.markdown("**Scaling interne (sur les points)**")
-        c1, c2 = st.columns(2)
-        int_mult = c1.number_input("Multiplicateur", value=1.0, step=0.1, min_value=0.01, key="int_mult")
-        int_cx   = c2.number_input("Centre X (cm)",  value=0.0, step=1.0, key="int_cx")
-        if st.button("Appliquer scaling interne", key="apply_int"):
-            if not pts_df.empty:
-                mask = pts_df["object_id"] == sel_oid
-                if mask.any():
-                    pts2 = pts_df.copy()
-                    pts2.loc[mask,"x"] = (pts2.loc[mask,"x"] - int_cx)*int_mult + int_cx
-                    pts2.loc[mask,"y"] = pts2.loc[mask,"y"]*int_mult
-                    pts2.loc[mask,"z"] = pts2.loc[mask,"z"]*int_mult
-                    save_parquet(pts2, PTS_KEY)
-                    st.success("Points re-scalés !")
-                    st.rerun()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # POSITION EXACTE
-    # ══════════════════════════════════════════════════════════════════════════
-    with t_abs:
-        st.markdown("**Position absolue (cm)**")
-        c1, c2, c3 = st.columns(3)
-        npx = c1.number_input("X", value=px, step=1.0, format="%.1f", key=f"apx_{sel_oid}")
-        npy = c2.number_input("Y", value=py, step=1.0, format="%.1f", key=f"apy_{sel_oid}")
-        npz = c3.number_input("Z", value=pz, step=1.0, format="%.1f", key=f"apz_{sel_oid}")
-        if st.button("Appliquer position", key="abs_pos"):
-            idx = _obj_idx(obj_df, sel_oid)
-            if idx is not None:
-                df2 = obj_df.copy()
-                df2.at[idx,"pos_x"]=npx; df2.at[idx,"pos_y"]=npy; df2.at[idx,"pos_z"]=npz
-                save_parquet(df2, OBJ_KEY); st.rerun()
-
-        st.markdown("**Rotation absolue (degrés)**")
-        c1, c2, c3 = st.columns(3)
-        nrx = c1.number_input("X°", value=round(ex,2), step=1.0, format="%.2f", key=f"arx_{sel_oid}")
-        nry = c2.number_input("Y°", value=round(ey,2), step=1.0, format="%.2f", key=f"ary_{sel_oid}")
-        nrz = c3.number_input("Z°", value=round(ez,2), step=1.0, format="%.2f", key=f"arz_{sel_oid}")
-        if st.button("Appliquer rotation", key="abs_rot"):
-            aqx, aqy, aqz, aqw = euler_to_quat(nrx, nry, nrz)
-            idx = _obj_idx(obj_df, sel_oid)
-            if idx is not None:
-                df2 = obj_df.copy()
-                df2.at[idx,"rot_x"]=aqx; df2.at[idx,"rot_y"]=aqy
-                df2.at[idx,"rot_z"]=aqz; df2.at[idx,"rot_w"]=aqw
-                save_parquet(df2, OBJ_KEY); st.rerun()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SUPPRIMER
-    # ══════════════════════════════════════════════════════════════════════════
-    with t_del:
-        st.warning(f"⚠️ Supprimer **{obj['name']}** et tous ses points / segments ?")
-        if st.button("🗑 Confirmer", key="del_obj_confirm"):
-            df2 = obj_df[obj_df["object_id"] != sel_oid]
-            p2  = pts_df[pts_df["object_id"] != sel_oid] if not pts_df.empty else pts_df
-            s2  = seg_df[seg_df["object_id"]  != sel_oid] if not seg_df.empty else seg_df
-            for df_, k_ in [(df2,OBJ_KEY),(p2,PTS_KEY),(s2,SEG_KEY)]:
-                save_parquet(df_, k_)
-            st.session_state["object_id"] = None
-            st.rerun()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# OBJECT DESIGNER — points & segments
-# ─────────────────────────────────────────────────────────────────────────────
-
-def panel_object_designer(obj_df, pts_df, seg_df, sel_oid):
-
-    if sel_oid is None:
-        st.markdown(
-            '<div class="info-box">👆 Sélectionnez un objet pour éditer ses points.</div>',
-            unsafe_allow_html=True,
-        )
-        return
-
-    if obj_df[obj_df["object_id"] == sel_oid].empty:
-        return
-
-    o_pts  = pts_df[pts_df["object_id"] == sel_oid] if not pts_df.empty else pd.DataFrame()
-    o_segs = seg_df[seg_df["object_id"]  == sel_oid] if not seg_df.empty else pd.DataFrame()
-
-    tab_pts, tab_segs, tab_csv = st.tabs(["📍 Points", "🔗 Segments", "⬇ Import CSV"])
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # POINTS
-    # ══════════════════════════════════════════════════════════════════════════
-    with tab_pts:
-        with st.expander("➕ Ajouter un point", expanded=o_pts.empty):
-            c1,c2,c3,c4 = st.columns([2,2,2,1])
-            nx=c1.number_input("X(cm)",value=0.0,step=1.0,format="%.1f",key="np_x")
-            ny=c2.number_input("Y(cm)",value=0.0,step=1.0,format="%.1f",key="np_y")
-            nz=c3.number_input("Z(cm)",value=0.0,step=1.0,format="%.1f",key="np_z")
-            c4.markdown("<br>", unsafe_allow_html=True)
-            if c4.button("OK", key="add_pt"):
-                pid = next_id(pts_df, "point_id")
-                pts2 = pd.concat([pts_df, pd.DataFrame([{
-                    "point_id":pid,"object_id":sel_oid,
-                    "x":float(nx),"y":float(ny),"z":float(nz),
-                }])], ignore_index=True)
-                save_parquet(pts2, PTS_KEY); st.rerun()
-
-        if o_pts.empty:
-            st.info("Aucun point.")
-            return
-
-        # Sélection du point à manipuler
-        pt_map = {
-            f"#{int(r['point_id'])}  ({float(r['x']):.1f}, {float(r['y']):.1f}, {float(r['z']):.1f})": int(r["point_id"])
-            for _, r in o_pts.iterrows()
+    loc = ""
+    objs: list[dict] = []
+    for _, row in df.iterrows():
+        t = str(row.get("type", ""))
+        if t == "meta": loc = str(row.get("_location_", "")); continue
+        coords: dict = {}
+        try: coords = json.loads(str(row.get("coords", "{}")))
+        except: pass
+        o: dict = {
+            "id": str(row["object_id"]),
+            "type": "r" if t == "rectangle" else "a",
+            "label": str(row.get("label", "")),
+            "w2": str(row.get("writable", "true")).lower() == "false",
         }
-        sel_lbl = st.selectbox("Point actif", list(pt_map.keys()), key="sel_pt_lbl")
-        sel_pid = pt_map[sel_lbl]
-        pt_row  = o_pts[o_pts["point_id"] == sel_pid].iloc[0]
-        cx, cy, cz = float(pt_row["x"]), float(pt_row["y"]), float(pt_row["z"])
+        if t == "rectangle":
+            o.update({"x": float(coords.get("x", 100)),
+                      "y": float(coords.get("y", 100)),
+                      "w": float(coords.get("w", 180)),
+                      "h": float(coords.get("h", 100))})
+        elif t == "arrow":
+            o.update({"x1": float(coords.get("x1", 0)),
+                      "y1": float(coords.get("y1", 0)),
+                      "x2": float(coords.get("x2", 100)),
+                      "y2": float(coords.get("y2", 100)),
+                      "srcId": coords.get("srcId"),
+                      "dstId": coords.get("dstId")})
+        objs.append(o)
 
+    objs_json = json.dumps(objs, ensure_ascii=False)
+
+    # Header
+    cb, ct = st.columns([.12, .88])
+    with cb:
+        if st.button("← Retour", key="map_back", use_container_width=True):
+            go_back(); st.rerun()
+    with ct:
+        st.markdown(f'<div class="pt">🧠 {item["name"]}</div>',
+                    unsafe_allow_html=True)
+
+    c_v, c_h = st.columns([.3, .7])
+    with c_v: _render_version_picker(ds, fid, "map")
+    with c_h:
         st.markdown(
-            f'<div class="pos-display">'
-            f'<div class="pos-axis"><span>X</span>{cx:.1f} cm</div>'
-            f'<div class="pos-axis"><span>Y</span>{cy:.1f} cm</div>'
-            f'<div class="pos-axis"><span>Z</span>{cz:.1f} cm</div>'
-            f'</div>', unsafe_allow_html=True,
-        )
+            '<div style="font-size:.65rem;color:var(--t3);padding-top:8px;">'
+            '💡 Clic: sél | 2e clic: écrire | Alt+drag: pan | '
+            'Ctrl+Z/Y: undo/redo | 💾 Sauvegarder → coller ci-dessous</div>',
+            unsafe_allow_html=True)
 
-        pstep = st.number_input(
-            "Pas (cm)", min_value=0.1, max_value=9999.0,
-            value=st.session_state["pt_move_step"], step=0.1, format="%.1f", key="pt_step_v"
-        )
-        st.session_state["pt_move_step"] = pstep
+    # ── Canal de sauvegarde ────────────────────────────────────────────────
+    # Architecture robuste sans dépendance aux iframes cross-origin :
+    # 1) Le bouton 💾 dans le canvas exporte les données dans une textarea HTML
+    # 2) L'utilisateur copie/colle OU le navigateur déclenche l'auto-copie
+    # 3) Un st.text_area Streamlit reçoit les données et déclenche la sauvegarde R2
+    #
+    # Pour l'autosave sans copier-coller : le canvas envoie via postMessage
+    # et un composant HTML bridge tente de l'injecter dans le text_area Streamlit.
 
-        def _mpt(dx=0.0, dy=0.0, dz=0.0):
-            idx = pts_df.index[pts_df["point_id"] == sel_pid][0]
-            df2 = pts_df.copy()
-            df2.at[idx,"x"] += dx; df2.at[idx,"y"] += dy; df2.at[idx,"z"] += dz
-            save_parquet(df2, PTS_KEY); st.rerun()
-
-        st.markdown('<p class="move-lbl">Plan XZ</p>', unsafe_allow_html=True)
-        _, tc, _ = st.columns([1,1,1])
-        if tc.button("⬆ −Z", key="pt_mz", use_container_width=True):
-            _mpt(dz=-pstep)
-        lc2, mc2, rc2 = st.columns(3)
-        if lc2.button("◀ −X", key="pt_mx", use_container_width=True):
-            _mpt(dx=-pstep)
-        mc2.markdown(f"<div style='text-align:center;padding:8px 0;border:1px solid #21262d;border-radius:5px;font-size:10px;color:#888'>X{cx:.1f}<br>Z{cz:.1f}</div>", unsafe_allow_html=True)
-        if rc2.button("▶ +X", key="pt_px", use_container_width=True):
-            _mpt(dx=+pstep)
-        _, bc, _ = st.columns([1,1,1])
-        if bc.button("⬇ +Z", key="pt_pz", use_container_width=True):
-            _mpt(dz=+pstep)
-
-        st.markdown('<p class="move-lbl">Vertical Y</p>', unsafe_allow_html=True)
-        yc1, yc2, yc3 = st.columns(3)
-        if yc1.button("▲ +Y", key="pt_py", use_container_width=True):
-            _mpt(dy=+pstep)
-        yc2.markdown(f"<div style='text-align:center;padding:6px 0;font-size:10px;color:#888'>Y {cy:.1f}</div>", unsafe_allow_html=True)
-        if yc3.button("▼ −Y", key="pt_my", use_container_width=True):
-            _mpt(dy=-pstep)
-
-        st.divider()
-        st.markdown("**Édition directe**")
-        edit = st.data_editor(
-            o_pts[["point_id","x","y","z"]].reset_index(drop=True),
-            key=f"pts_edit_{sel_oid}", use_container_width=True, hide_index=True,
-            column_config={
-                "point_id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "x": st.column_config.NumberColumn("X (cm)", step=0.1, format="%.1f"),
-                "y": st.column_config.NumberColumn("Y (cm)", step=0.1, format="%.1f"),
-                "z": st.column_config.NumberColumn("Z (cm)", step=0.1, format="%.1f"),
-            },
-        )
-        c1, c2 = st.columns(2)
-        if c1.button("💾 Sauvegarder", key="save_pts"):
-            df2 = pts_df.copy()
-            for _, r in edit.iterrows():
-                if pd.notna(r.get("point_id")):
-                    idx = df2.index[df2["point_id"] == int(r["point_id"])]
-                    if len(idx):
-                        df2.at[idx[0],"x"]=float(r["x"])
-                        df2.at[idx[0],"y"]=float(r["y"])
-                        df2.at[idx[0],"z"]=float(r["z"])
-            save_parquet(df2, PTS_KEY); st.success("Sauvegardé"); st.rerun()
-
-        if c2.button("🗑 Supprimer point", key="del_pt"):
-            p2 = pts_df[pts_df["point_id"] != sel_pid]
-            s2 = seg_df[(seg_df["point_a_id"] != sel_pid)&(seg_df["point_b_id"] != sel_pid)] \
-                 if not seg_df.empty else seg_df
-            save_parquet(p2, PTS_KEY); save_parquet(s2, SEG_KEY); st.rerun()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # SEGMENTS
-    # ══════════════════════════════════════════════════════════════════════════
-    with tab_segs:
-        if o_pts.empty or len(o_pts) < 2:
-            st.info("Au moins 2 points requis."); return
-
-        pt_lbl = {
-            f"#{int(r['point_id'])} ({float(r['x']):.1f},{float(r['y']):.1f},{float(r['z']):.1f})": int(r["point_id"])
-            for _, r in o_pts.iterrows()
-        }
-        lbls = list(pt_lbl.keys())
-        c1, c2 = st.columns(2)
-        sa = c1.selectbox("Point A", lbls, key="seg_a")
-        sb = c2.selectbox("Point B", lbls, key="seg_b", index=min(1,len(lbls)-1))
-
-        if st.button("🔗 Créer segment", key="mk_seg"):
-            pa_id, pb_id = pt_lbl[sa], pt_lbl[sb]
-            if pa_id == pb_id:
-                st.error("Deux points distincts requis.")
-            else:
-                dupe = (not seg_df.empty) and not seg_df[
-                    (seg_df["object_id"]==sel_oid) &
-                    (((seg_df["point_a_id"]==pa_id)&(seg_df["point_b_id"]==pb_id))|
-                     ((seg_df["point_a_id"]==pb_id)&(seg_df["point_b_id"]==pa_id)))
-                ].empty
-                if dupe:
-                    st.warning("Segment déjà existant.")
-                else:
-                    sid = next_id(seg_df, "segment_id")
-                    s2  = pd.concat([seg_df, pd.DataFrame([{
-                        "segment_id":sid,"object_id":sel_oid,
-                        "point_a_id":pa_id,"point_b_id":pb_id,
-                    }])], ignore_index=True)
-                    save_parquet(s2, SEG_KEY); st.rerun()
-
-        if not o_segs.empty:
-            st.markdown(f"**{len(o_segs)} segment(s)**")
-            st.dataframe(o_segs[["segment_id","point_a_id","point_b_id"]].reset_index(drop=True),
-                         use_container_width=True, hide_index=True)
-            c1, c2 = st.columns([3,1])
-            dsid = c1.selectbox("Supprimer", o_segs["segment_id"].tolist(), key="dseg_sel")
-            if c2.button("🗑", key="dseg_btn"):
-                save_parquet(seg_df[seg_df["segment_id"]!=dsid], SEG_KEY); st.rerun()
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # CSV
-    # ══════════════════════════════════════════════════════════════════════════
-    with tab_csv:
-        st.markdown('<div class="info-box">Format : <code>x,y,z</code> par ligne (cm)</div>', unsafe_allow_html=True)
-        up = st.file_uploader("CSV", type=["csv"], key="csv_up")
-        if up:
-            try:
-                dfc = pd.read_csv(up, names=["x","y","z"])
-                st.dataframe(dfc.head(10), use_container_width=True)
-                st.markdown(f"**{len(dfc)} points**")
-                if st.button("⬇ Importer", key="do_import"):
-                    base = next_id(pts_df, "point_id")
-                    new  = [{"point_id":base+i,"object_id":sel_oid,
-                              "x":float(r["x"]),"y":float(r["y"]),"z":float(r["z"])}
-                             for i,(_,r) in enumerate(dfc.iterrows())]
-                    save_parquet(pd.concat([pts_df, pd.DataFrame(new)], ignore_index=True), PTS_KEY)
-                    st.success(f"{len(new)} points importés !"); st.rerun()
-            except Exception as exc:
-                st.error(f"Erreur : {exc}")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MAIN
-# ─────────────────────────────────────────────────────────────────────────────
-
-def main():
-    init_session()
-
-    if not st.session_state["r2_ready"]:
+    pending = st.session_state.get("map_pending_save")
+    if pending:
         try:
-            init_r2_tables()
-            st.session_state["r2_ready"] = True
-        except Exception as exc:
-            st.warning(f"R2 non disponible : {exc}")
+            payload = json.loads(pending)
+            if payload.get("fid") == fid:
+                _save_map_from_payload(ds, fid, loc, payload)
+                st.session_state.map_pending_save = None
+                st.toast("Map sauvegardée ✓", icon="✅")
+        except: pass
 
-    proj_df = load_parquet(PROJ_KEY, PROJ_COLS)
-    obj_df  = load_parquet(OBJ_KEY,  OBJ_COLS)
-    pts_df  = load_parquet(PTS_KEY,  PTS_COLS)
-    seg_df  = load_parquet(SEG_KEY,  SEG_COLS)
+    # Composant bridge qui écoute postMessage du canvas
+    bridge = f"""<script>
+    window.addEventListener('message',function(e){{
+      if(!e.data||!e.data.mapdata)return;
+      try{{
+        // Trouve le text_area Streamlit et y injecte les données
+        const tas=window.parent.document.querySelectorAll('textarea');
+        for(const ta of tas){{
+          if(ta.placeholder&&ta.placeholder.includes('__mapsave_')){{
+            const setter=Object.getOwnPropertyDescriptor(
+              window.parent.HTMLTextAreaElement.prototype,'value');
+            setter.set.call(ta,e.data.mapdata);
+            ta.dispatchEvent(new Event('input',{{bubbles:true}}));
+            break;
+          }}
+        }}
+      }}catch(err){{}}
+    }});
+    </script>"""
+    components.html(bridge, height=0)
 
-    # ── Sidebar ───────────────────────────────────────────────────────────────
-    with st.sidebar:
+    # Zone de saisie des données exportées
+    with st.expander("💾 Sauvegarder la map", expanded=False):
         st.markdown(
-            '<div class="studio-header">'
-            '<div><div class="studio-title">🧊 3D Design Studio</div>'
-            '<div class="studio-sub">Point · Segment · Transform</div></div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
+            '<span style="font-size:.75rem;color:var(--t3);">'
+            'Cliquer le bouton **💾 Sauvegarder** dans le canvas, '
+            'puis coller ici si la sauvegarde automatique ne s\'est '
+            'pas déclenchée.</span>', unsafe_allow_html=True)
+        raw = st.text_area(
+            "", key=f"mraw_{fid}",
+            placeholder=f"__mapsave_{fid}__",
+            height=60, label_visibility="collapsed")
+        if raw and raw.strip().startswith("{"):
+            try:
+                payload = json.loads(raw.strip())
+                if payload.get("fid") == fid:
+                    _save_map_from_payload(ds, fid, loc, payload)
+                    st.success("Map sauvegardée !")
+            except Exception as ex:
+                st.error(f"Erreur : {ex}")
 
-        mode_lbl = st.radio(
-            "Mode", ["📐 Plan Editor", "✏️ Object Designer"],
-            index=0 if st.session_state["mode"]=="plan_editor" else 1,
-            horizontal=True, label_visibility="collapsed",
-        )
-        st.session_state["mode"] = "plan_editor" if "Plan" in mode_lbl else "object_designer"
+    # Canvas
+    components.html(_build_map_html(objs_json, fid, loc),
+                    height=650, scrolling=False)
 
-        bcls = "badge-plan" if st.session_state["mode"]=="plan_editor" else "badge-object"
-        blbl = "PLAN EDITOR" if st.session_state["mode"]=="plan_editor" else "OBJECT DESIGNER"
-        st.markdown(f'<span class="badge {bcls}">{blbl}</span>', unsafe_allow_html=True)
-
-        st.divider()
-
-        # Projets
-        st.markdown('<p class="section-label">📁 Projets</p>', unsafe_allow_html=True)
-        with st.expander("Nouveau projet", expanded=proj_df.empty):
-            pname = st.text_input("Nom", key="new_proj_name", placeholder="Mon projet…")
-            if st.button("Créer", key="create_proj"):
-                if pname.strip():
-                    pid = next_id(proj_df, "project_id")
-                    proj_df = pd.concat([proj_df, pd.DataFrame([{
-                        "project_id":pid,"name":pname.strip(),
-                        "created_at":datetime.now().isoformat(),
-                    }])], ignore_index=True)
-                    save_parquet(proj_df, PROJ_KEY)
-                    st.session_state["project_id"]=pid
-                    st.session_state["object_id"]=None
-                    st.rerun()
-
-        if not proj_df.empty:
-            pnames=proj_df["name"].tolist(); pids=proj_df["project_id"].tolist()
-            cur=st.session_state["project_id"]; ci=pids.index(cur) if cur in pids else 0
-            sel_pn=st.selectbox("Projet",pnames,index=ci,key="proj_sel",label_visibility="collapsed")
-            st.session_state["project_id"]=pids[pnames.index(sel_pn)]
-            if st.button("🗑 Supprimer projet", key="del_proj"):
-                dpid=st.session_state["project_id"]
-                proj_df=proj_df[proj_df["project_id"]!=dpid]
-                if not obj_df.empty:
-                    doids=obj_df[obj_df["project_id"]==dpid]["object_id"].tolist()
-                    obj_df=obj_df[obj_df["project_id"]!=dpid]
-                    if not pts_df.empty: pts_df=pts_df[~pts_df["object_id"].isin(doids)]
-                    if not seg_df.empty: seg_df=seg_df[~seg_df["object_id"].isin(doids)]
-                for df_,k_ in [(proj_df,PROJ_KEY),(obj_df,OBJ_KEY),(pts_df,PTS_KEY),(seg_df,SEG_KEY)]:
-                    save_parquet(df_,k_)
-                st.session_state["project_id"]=None; st.session_state["object_id"]=None; st.rerun()
-        else:
-            st.caption("Aucun projet.")
-
-        st.divider()
-
-        # Objets
-        cur_pid=st.session_state.get("project_id")
-        st.markdown('<p class="section-label">📦 Objets</p>', unsafe_allow_html=True)
-        if cur_pid is not None:
-            with st.expander("Nouvel objet"):
-                oname=st.text_input("Nom",key="new_obj_name",placeholder="Objet A…")
-                if st.button("Créer",key="create_obj"):
-                    oid=next_id(obj_df,"object_id")
-                    obj_df=pd.concat([obj_df,pd.DataFrame([{
-                        "object_id":oid,"project_id":cur_pid,
-                        "name":oname.strip() or f"Objet {oid}",
-                        "pos_x":0.0,"pos_y":0.0,"pos_z":0.0,
-                        "rot_x":0.0,"rot_y":0.0,"rot_z":0.0,"rot_w":1.0,
-                        "scale_x":1.0,"scale_y":1.0,"scale_z":1.0,
-                    }])],ignore_index=True)
-                    save_parquet(obj_df,OBJ_KEY); st.session_state["object_id"]=oid; st.rerun()
-
-            proj_objs=obj_df[obj_df["project_id"]==cur_pid] if not obj_df.empty else pd.DataFrame()
-            sel_oid=st.session_state.get("object_id")
-            if not proj_objs.empty:
-                for _,o in proj_objs.iterrows():
-                    oid2=int(o["object_id"]); active=oid2==sel_oid
-                    np_=len(pts_df[pts_df["object_id"]==oid2]) if not pts_df.empty else 0
-                    lbl=f"{'▶ ' if active else '  '}{o['name']} · {np_}pt"
-                    if st.button(lbl,key=f"sel_{oid2}",use_container_width=True):
-                        st.session_state["object_id"]=oid2; st.rerun()
-            else:
-                st.caption("Aucun objet.")
-        else:
-            st.caption("Sélectionnez un projet.")
-
-        st.divider()
-        st.markdown('<p class="section-label">👁 Affichage</p>', unsafe_allow_html=True)
-        c1,c2=st.columns(2)
-        st.session_state["show_grid"]=c1.checkbox("Grille",value=True)
-        st.session_state["show_axes"]=c2.checkbox("Axes",  value=True)
-        st.session_state["snap"]=st.checkbox("Snap visuel",value=True)
-        if st.session_state["snap"]:
-            st.session_state["snap_dist"]=st.slider(
-                "Seuil snap",0.5,30.0,5.0,0.5,label_visibility="collapsed"
-            )
-
-    # ── Zone principale ───────────────────────────────────────────────────────
-    cur_oid = st.session_state.get("object_id")
-    cur_pts = st.session_state.get("selected_pts", [])
-    cur_pid = st.session_state.get("project_id")
-
-    scene = build_scene_json(cur_pid, obj_df, pts_df, seg_df, cur_oid, cur_pts)
-    render_viewer(scene, st.session_state["mode"], height=520)
-
-    st.markdown("<hr style='border-color:#21262d;margin:8px 0'>", unsafe_allow_html=True)
-
-    if st.session_state["mode"] == "plan_editor":
-        panel_plan_editor(obj_df, pts_df, seg_df, cur_oid)
-    else:
-        panel_object_designer(obj_df, pts_df, seg_df, cur_oid)
+    st.markdown(
+        '<div style="font-size:.65rem;color:var(--t3);margin-top:4px;">'
+        '💡 <b>Alt+Drag</b>: panoramique &nbsp;|&nbsp; '
+        '<b>Molette</b>: zoom &nbsp;|&nbsp; '
+        '<b>Clic</b>: sélectionner &nbsp;|&nbsp; '
+        '<b>2e clic / frappe</b>: écrire dans une forme &nbsp;|&nbsp; '
+        '<b>Ctrl+Z/Y</b>: undo/redo &nbsp;|&nbsp; '
+        '<b>Suppr.</b>: effacer</div>',
+        unsafe_allow_html=True)
 
 
-if __name__ == "__main__":
-    main()
+def _save_map_from_payload(ds: DataStore, fid: str, loc: str, payload: dict):
+    rows_in = payload.get("rows", [])
+    rows_out = [{
+        "_location_": loc, "object_id": "_meta_",
+        "type": "meta", "label": "map",
+        "coords": "{}", "writable": "false",
+    }]
+    for r in rows_in:
+        t = r.get("type", "")
+        rows_out.append({
+            "_location_": "",
+            "object_id": str(r.get("object_id", "")),
+            "type": t,
+            "label": str(r.get("label", "")),
+            "coords": str(r.get("coords", "{}")),
+            "writable": str(r.get("writable", "true")),
+        })
+    ds.sv_map(fid, pd.DataFrame(rows_out))
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  §11 — MAIN
+# ══════════════════════════════════════════════════════════════════════════════
+def main():
+    st.set_page_config(
+        page_title="🍵 WorkSpace", layout="wide",
+        initial_sidebar_state="expanded")
+    st.markdown(f"<style>{CSS}</style>", unsafe_allow_html=True)
+    init_state()
+    with st.sidebar: render_sidebar()
+    user = st.session_state.get("current_user")
+    view = st.session_state.get("view", "folder")
+    if user is None: render_all_sessions()
+    elif view == "table": render_table()
+    elif view == "map": render_map()
+    else: render_folder()
+
+if __name__ == "__main__": main()
