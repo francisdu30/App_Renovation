@@ -1,8 +1,9 @@
 """
-3D Design Studio v4
-Streamlit + Three.js + Cloudflare R2 (Parquet)
-Grille éphémère VERTICALE — pas de sphères, lignes seulement
-Hover = intersection plan + snapping, indicateur temporaire
+3D Design Studio v5
+- Config grille sauvegardée par objet (cell_size, extent, angle)
+- Création de point directe au clic (sans confirmation, grille reste active)
+- Slider d'angle proéminent pleine largeur, 1 cran = 1°
+- Côté cellule avec décimale (précision mm)
 """
 
 import io, json, math
@@ -26,26 +27,22 @@ html,body,[class*="css"]{font-family:'JetBrains Mono',monospace;}
 section[data-testid="stSidebar"]{background:var(--bg1)!important;border-right:1px solid var(--border);}
 section[data-testid="stSidebar"]>div{padding-top:.4rem;}
 .main .block-container{padding:.6rem 1rem 1rem 1rem;max-width:100%;}
-
 .studio-header{display:flex;align-items:center;gap:10px;padding:10px 0 6px 0;
   border-bottom:1px solid var(--border);margin-bottom:10px;}
 .studio-title{font-family:'Syne',sans-serif;font-size:17px;font-weight:800;
   color:var(--accent);letter-spacing:-.5px;}
 .studio-sub{font-size:9px;color:var(--text2);letter-spacing:2px;text-transform:uppercase;}
-
 .badge{display:inline-block;padding:2px 8px;border-radius:4px;
   font-size:10px;font-weight:600;letter-spacing:1px;text-transform:uppercase;}
 .badge-plan  {background:#1a2744;color:#58a6ff;border:1px solid #1f3a72;}
 .badge-object{background:#2a1a1a;color:#f78166;border:1px solid #5a2a2a;}
 .section-label{font-size:9px;letter-spacing:2px;text-transform:uppercase;
   color:var(--text2);margin:6px 0 3px 0;}
-
 .metric-row{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:6px 0;}
 .metric-card{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
   padding:7px 10px;text-align:center;}
 .metric-val{font-size:15px;font-weight:700;color:var(--accent);}
 .metric-lbl{font-size:9px;color:var(--text2);letter-spacing:1px;text-transform:uppercase;}
-
 .pos-display{background:var(--bg2);border:1px solid var(--border);border-radius:6px;
   padding:7px 12px;margin:5px 0;display:flex;gap:14px;align-items:center;flex-wrap:wrap;}
 .pos-axis{font-size:11px;}
@@ -53,12 +50,22 @@ section[data-testid="stSidebar"]>div{padding-top:.4rem;}
 .move-lbl{font-size:9px;color:var(--text2);letter-spacing:1.5px;text-transform:uppercase;
   margin-bottom:2px;margin-top:6px;}
 
-/* Grid control bar */
-.grid-bar{background:#0d1929;border:1px solid #1f3a72;border-radius:8px;
-  padding:10px 14px;margin:6px 0;}
-.grid-bar-title{font-size:9px;color:#58a6ff;letter-spacing:2px;
-  text-transform:uppercase;margin-bottom:6px;}
+/* ── Grille éphémère ─────────────────────────────────────── */
+.grid-bar{background:linear-gradient(135deg,#0a1628,#0d2040);
+  border:1.5px solid #1f3a72;border-radius:10px;padding:14px 16px;margin:8px 0;}
+.grid-bar-title{font-size:9px;color:#8b949e;letter-spacing:2px;
+  text-transform:uppercase;margin-bottom:8px;}
+.angle-big{font-size:42px;font-weight:800;color:#58a6ff;
+  text-align:center;letter-spacing:-1px;line-height:1;}
+.angle-label{font-size:9px;color:#484f58;letter-spacing:2px;text-transform:uppercase;
+  text-align:center;margin-bottom:4px;}
+.preset-row{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0 8px 0;}
+.preset-btn{background:#0f1f40;border:1px solid #1f3a72;color:#58a6ff;
+  font-size:10px;padding:3px 7px;border-radius:4px;cursor:pointer;font-family:'JetBrains Mono',monospace;}
+.preset-btn:hover{background:#1a73e8;color:#fff;}
+.grid-info-row{display:flex;gap:16px;font-size:10px;color:#484f58;margin-top:6px;}
 
+/* ── Pending / info boxes ────────────────────────────────── */
 .pending-box{background:#0d1f0d;border:1px solid #2a5a2a;border-radius:6px;
   padding:9px 12px;font-size:11px;color:#6ab06a;margin:6px 0;}
 .pending-box strong{color:#3fb950;}
@@ -66,6 +73,9 @@ section[data-testid="stSidebar"]>div{padding-top:.4rem;}
   padding:9px 12px;font-size:11px;color:var(--text1);margin:6px 0;}
 .info-box code{background:var(--bg3);padding:1px 4px;border-radius:3px;
   color:#3fb950;font-size:10px;}
+.success-flash{background:#0d1f0d;border:1px solid #3fb950;border-radius:5px;
+  padding:5px 10px;font-size:11px;color:#3fb950;margin:4px 0;}
+
 .viewer-wrap{border-radius:8px;overflow:hidden;border:1px solid var(--border);}
 
 /* Hide message bus */
@@ -81,7 +91,6 @@ div[data-testid="stTextInput"]:has(input[placeholder="__3ds__"]){
 div[data-testid="stNumberInput"] input{font-family:'JetBrains Mono',monospace;font-size:12px;
   background:var(--bg2)!important;border-color:var(--border)!important;color:var(--text0)!important;}
 div[data-testid="stDataFrame"]{font-size:11px;}
-.stAlert{font-size:11px;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -97,8 +106,8 @@ def get_r2():
 
 def load_parquet(key, cols):
     try:
-        obj=get_r2().get_object(Bucket=st.secrets["R2_BUCKET"],Key=key)
-        return pd.read_parquet(io.BytesIO(obj["Body"].read()))
+        o=get_r2().get_object(Bucket=st.secrets["R2_BUCKET"],Key=key)
+        return pd.read_parquet(io.BytesIO(o["Body"].read()))
     except: return pd.DataFrame(columns=cols)
 
 def save_parquet(df, key):
@@ -106,11 +115,18 @@ def save_parquet(df, key):
     get_r2().put_object(Bucket=st.secrets["R2_BUCKET"],Key=key,Body=buf.getvalue())
 
 PROJ_KEY="projects.parquet"; OBJ_KEY="objects.parquet"
-PTS_KEY="points.parquet";    SEG_KEY="segments.parquet"
+PTS_KEY ="points.parquet";   SEG_KEY ="segments.parquet"
+
 PROJ_COLS=["project_id","name","created_at"]
 OBJ_COLS_BASE=["object_id","project_id","name","pos_x","pos_y","pos_z",
                "rot_x","rot_y","rot_z","rot_w","scale_x","scale_y","scale_z"]
-OBJ_COLS_EXT={"anchor_x":0.0,"anchor_y":0.0,"anchor_z":0.0}
+# Extended columns — added lazily on load
+OBJ_COLS_EXT={
+    "anchor_x":0.0,"anchor_y":0.0,"anchor_z":0.0,
+    "grid_cell_size":10.0,   # cm (décimale = mm)
+    "grid_extent":8,          # nb de carrés de chaque côté
+    "grid_angle":0,           # degrés
+}
 PTS_COLS=["point_id","object_id","x","y","z"]
 SEG_COLS=["segment_id","object_id","point_a_id","point_b_id"]
 
@@ -141,14 +157,47 @@ def init_session():
     _ss("selected_pts",[]); _ss("show_grid",True); _ss("show_axes",True)
     _ss("snap",True); _ss("snap_dist",5.0); _ss("r2_ready",False)
     _ss("move_step",1.0); _ss("rot_step",5.0); _ss("scale_step",0.1); _ss("pt_move_step",1.0)
-    # Grille éphémère
-    _ss("grid_cell_size",10.0)   # cm par côté de carré
-    _ss("grid_extent",8)          # nb de cellules de chaque côté
-    _ss("grid_origin",None)       # {x,y,z} cm — persiste entre reruns
-    _ss("grid_angle",0)           # degrés (int) — persiste entre reruns
-    # Pending
-    _ss("pending_pt",None)
-    _ss("pending_place",None)
+    # Grille
+    _ss("grid_cell_size",10.0)
+    _ss("grid_extent",8)
+    _ss("grid_angle",0)
+    _ss("grid_origin",None)
+    # Tracking
+    _ss("_prev_oid",None)
+    _ss("_last_pt_created",None)  # flash feedback
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GRID CONFIG ↔ OBJECT
+# ─────────────────────────────────────────────────────────────────────────────
+def sync_grid_from_object(obj_df, oid):
+    """Charge la config grille depuis l'objet sélectionné."""
+    rows=obj_df[obj_df["object_id"]==oid]
+    if rows.empty: return
+    o=rows.iloc[0]
+    st.session_state["grid_cell_size"]=float(o.get("grid_cell_size",10.0))
+    st.session_state["grid_extent"]=int(o.get("grid_extent",8))
+    st.session_state["grid_angle"]=int(o.get("grid_angle",0))
+    # Force reset des clés widget pour que le slider prenne les nouvelles valeurs
+    for k in ("gc_ang","gc_cell","gc_ext"):
+        st.session_state.pop(k, None)
+
+def save_grid_to_object(obj_df, oid):
+    """Sauvegarde la config grille courante dans l'objet."""
+    rows=obj_df[obj_df["object_id"]==oid]
+    if rows.empty: return obj_df
+    idx=rows.index[0]
+    cell=float(st.session_state["grid_cell_size"])
+    ext =int(st.session_state["grid_extent"])
+    ang =int(st.session_state["grid_angle"])
+    o=rows.iloc[0]
+    if float(o.get("grid_cell_size",10.0))==cell and int(o.get("grid_extent",8))==ext and int(o.get("grid_angle",0))==ang:
+        return obj_df  # rien à sauvegarder
+    df2=obj_df.copy()
+    df2.at[idx,"grid_cell_size"]=cell
+    df2.at[idx,"grid_extent"]=ext
+    df2.at[idx,"grid_angle"]=ang
+    save_parquet(df2,OBJ_KEY)
+    return df2
 
 # ─────────────────────────────────────────────────────────────────────────────
 # MATH
@@ -172,7 +221,7 @@ def compose_rot(qx,qy,qz,qw,axis,deg):
     return (dw*qx+dx*qw+dy*qz-dz*qy,dw*qy-dx*qz+dy*qw+dz*qx,
             dw*qz+dx*qy-dy*qx+dz*qw,dw*qw-dx*qx-dy*qy-dz*qz)
 
-def find_coincident_points(obj_df,pts_df,thr=0.5):
+def find_coincident(obj_df,pts_df,thr=0.5):
     if pts_df.empty or obj_df.empty or len(pts_df)<2: return set()
     world=[]
     for _,pt in pts_df.iterrows():
@@ -190,6 +239,67 @@ def find_coincident_points(obj_df,pts_df,thr=0.5):
             dx=world[i][2]-world[j][2]; dy=world[i][3]-world[j][3]; dz=world[i][4]-world[j][4]
             if dx*dx+dy*dy+dz*dz<t2: coinc.add(world[i][0]); coinc.add(world[j][0])
     return coinc
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VIEWER ACTION PROCESSOR
+# ─────────────────────────────────────────────────────────────────────────────
+def process_viewer_action(raw, obj_df, pts_df, seg_df):
+    try: action=json.loads(raw)
+    except: return
+    t=action.get("type","")
+
+    # Toujours restaurer l'état grille envoyé par le viewer
+    if "gridOriginX" in action:
+        st.session_state["grid_origin"]={
+            "x":action["gridOriginX"],"y":action["gridOriginY"],"z":action["gridOriginZ"]}
+    if "gridAngle" in action:
+        st.session_state["grid_angle"]=int(round(float(action["gridAngle"])))%360
+        st.session_state.pop("gc_ang",None)
+
+    if t=="grid_activate":
+        st.session_state["grid_origin"]={"x":action["x"],"y":action["y"],"z":action["z"]}
+        st.session_state["grid_angle"]=int(round(float(action.get("angle",0))))%360
+        st.session_state.pop("gc_ang",None)
+
+    elif t=="grid_dismiss":
+        st.session_state["grid_origin"]=None
+
+    elif t=="grid_click_od":
+        # Création directe du point — pas de confirmation
+        sel_oid=st.session_state.get("object_id")
+        if sel_oid is not None:
+            rows=obj_df[obj_df["object_id"]==sel_oid]
+            if not rows.empty:
+                o=rows.iloc[0]
+                # Coordonnées locales (monde → objet, en ignorant rotation pour simplifier)
+                lx=round(action["x"]-float(o["pos_x"]),2)
+                ly=round(action["y"]-float(o["pos_y"]),2)
+                lz=round(action["z"]-float(o["pos_z"]),2)
+                pid=next_id(pts_df,"point_id")
+                new_row=pd.DataFrame([{"point_id":pid,"object_id":sel_oid,"x":lx,"y":ly,"z":lz}])
+                pts2=pd.concat([pts_df,new_row],ignore_index=True)
+                save_parquet(pts2,PTS_KEY)
+                st.session_state["_last_pt_created"]=f"#{pid} ({lx:.1f},{ly:.1f},{lz:.1f}) cm"
+                # NE PAS effacer grid_origin → la grille reste active
+        st.session_state["_viewer_msg"]=""; st.rerun()
+
+    elif t=="grid_click_pe":
+        st.session_state["pending_place"]={"x":action["x"],"y":action["y"],"z":action["z"]}
+
+    elif t=="delete_point":
+        pid=int(action["id"])
+        p2=pts_df[pts_df["point_id"]!=pid]
+        s2=seg_df[(seg_df["point_a_id"]!=pid)&(seg_df["point_b_id"]!=pid)] if not seg_df.empty else seg_df
+        save_parquet(p2,PTS_KEY); save_parquet(s2,SEG_KEY)
+        st.session_state["_viewer_msg"]=""; st.rerun()
+
+    elif t=="delete_segment":
+        save_parquet(seg_df[seg_df["segment_id"]!=int(action["id"])],SEG_KEY)
+        st.session_state["_viewer_msg"]=""; st.rerun()
+
+    elif t=="select_object":
+        st.session_state["object_id"]=int(action["id"])
+        st.session_state["_viewer_msg"]=""; st.rerun()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SCENE JSON
@@ -228,43 +338,9 @@ def build_scene_json(project_id,obj_df,pts_df,seg_df,sel_obj,sel_pts,coinc_ids):
     return scene
 
 # ─────────────────────────────────────────────────────────────────────────────
-# VIEWER ACTION PROCESSOR
+# THREE.JS VIEWER
 # ─────────────────────────────────────────────────────────────────────────────
-def process_viewer_action(raw,obj_df,pts_df,seg_df):
-    try: action=json.loads(raw)
-    except: return
-    t=action.get("type","")
-    if "gridOriginX" in action:
-        st.session_state["grid_origin"]={"x":action["gridOriginX"],"y":action["gridOriginY"],"z":action["gridOriginZ"]}
-    if "gridAngle" in action:
-        st.session_state["grid_angle"]=int(round(float(action["gridAngle"])))%360
-
-    if t=="grid_click_od":
-        st.session_state["pending_pt"]={"x":action["x"],"y":action["y"],"z":action["z"]}
-    elif t=="grid_click_pe":
-        st.session_state["pending_place"]={"x":action["x"],"y":action["y"],"z":action["z"]}
-    elif t=="grid_activate":
-        st.session_state["grid_origin"]={"x":action["x"],"y":action["y"],"z":action["z"]}
-        st.session_state["grid_angle"]=int(round(float(action.get("angle",0))))%360
-    elif t=="grid_dismiss":
-        st.session_state["grid_origin"]=None
-    elif t=="delete_point":
-        pid=int(action["id"])
-        p2=pts_df[pts_df["point_id"]!=pid]
-        s2=seg_df[(seg_df["point_a_id"]!=pid)&(seg_df["point_b_id"]!=pid)] if not seg_df.empty else seg_df
-        save_parquet(p2,PTS_KEY); save_parquet(s2,SEG_KEY)
-        st.session_state["_viewer_msg"]=""; st.rerun()
-    elif t=="delete_segment":
-        save_parquet(seg_df[seg_df["segment_id"]!=int(action["id"])],SEG_KEY)
-        st.session_state["_viewer_msg"]=""; st.rerun()
-    elif t=="select_object":
-        st.session_state["object_id"]=int(action["id"])
-        st.session_state["_viewer_msg"]=""; st.rerun()
-
-# ─────────────────────────────────────────────────────────────────────────────
-# VIEWER HTML — Three.js with VERTICAL ephemeral grid
-# ─────────────────────────────────────────────────────────────────────────────
-def render_viewer(scene,mode,height=530):
+def render_viewer(scene, mode, height=530):
     sj=json.dumps(scene)
     is_plan=(mode=="plan_editor")
     bcls="badge-plan" if is_plan else "badge-object"
@@ -281,50 +357,43 @@ body{{background:#fff;overflow:hidden;font-family:'JetBrains Mono',monospace;}}
 .badge-object{{background:rgba(42,26,26,.9);color:#f78166;border:1px solid #5a2a2a;}}
 #coords{{bottom:10px;left:10px;color:#333;background:rgba(255,255,255,.92);padding:5px 10px;border-radius:4px;border:1px solid #ccc;font-size:11px;}}
 #status{{bottom:10px;right:10px;color:#444;background:rgba(255,255,255,.92);padding:5px 10px;border-radius:4px;border:1px solid #ccc;}}
-#help{{top:10px;right:10px;color:#555;background:rgba(255,255,255,.92);padding:8px 12px;border-radius:6px;border:1px solid #ccc;line-height:1.9;font-size:10px;}}
-/* Grid info HUD */
-#ghud{{top:56px;left:10px;background:rgba(10,18,40,.92);color:#58a6ff;border:1px solid #1f3a72;border-radius:6px;padding:9px 12px;display:none;min-width:180px;font-size:11px;line-height:1.7;}}
-#ghud .gt{{font-size:9px;color:#8b949e;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px;}}
-#ghud .gd{{color:#3fb950;margin-top:3px;}}
-#ghud .gesc{{color:#484f58;font-size:9px;margin-top:4px;}}
-/* Hover crosshair */
-#crosshair{{display:none;position:absolute;pointer-events:none;}}
+#help{{top:10px;right:10px;color:#555;background:rgba(255,255,255,.92);padding:7px 10px;border-radius:6px;border:1px solid #ccc;line-height:1.8;font-size:10px;}}
+#ghud{{top:56px;left:10px;background:rgba(10,18,40,.93);color:#58a6ff;border:1px solid #1f3a72;
+  border-radius:6px;padding:9px 12px;display:none;min-width:210px;font-size:11px;line-height:1.7;pointer-events:none;}}
+#ghud .gt{{font-size:9px;color:#8b949e;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:3px;}}
+#ghud .gd{{color:#3fb950;font-size:12px;font-weight:600;}}
+#pt-flash{{bottom:48px;left:10px;background:rgba(10,40,10,.9);color:#3fb950;
+  border:1px solid #3fb950;border-radius:5px;padding:5px 10px;font-size:11px;display:none;}}
 </style>
 </head>
 <body>
 <div id="wrap">
   <div id="badge" class="hud {bcls}">{blbl}</div>
   <div id="help" class="hud">
-    🖱 Clic droit+glisser → rotation vue<br>
-    🖱 Molette+glisser → pan<br>
-    🖱 Molette → zoom<br>
-    🖱 Clic gauche → sélect / activer grille<br>
-    ⌨ Suppr → supprimer sélection (OD)<br>
-    ⌨ Échap → fermer grille
+    Clic droit+glisser → rotation vue<br>
+    Molette+glisser → pan · Molette → zoom<br>
+    Clic sur point/sol → grille verticale<br>
+    Suppr → supprimer sélection (OD)<br>
+    Échap → fermer grille
   </div>
   <div id="ghud" class="hud">
-    <div class="gt">⊞ grille éphémère verticale</div>
-    <div id="gh-angle">Angle : 0°</div>
+    <div class="gt">⊞ grille verticale</div>
+    <div id="gh-ang">Angle : 0°</div>
     <div id="gh-cell">Côté : — cm</div>
     <div class="gd" id="gh-dist">Survolez la grille…</div>
-    <div class="gesc">Échap → fermer</div>
   </div>
   <div id="coords" class="hud">X:0 · Y:0 · Z:0 cm</div>
   <div id="status" class="hud">Prêt</div>
+  <div id="pt-flash" class="hud">✓ Point créé</div>
 </div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
-// ═══════════════════════════════════════════════════════════
-// DATA
-// ═══════════════════════════════════════════════════════════
 const SCENE={sj};
 const MODE={json.dumps(mode)};
-const US=0.01; // cm→m
+const US=0.01;
 
-// ═══════════════════════════════════════════════════════════
-// DOM → STREAMLIT communication
-// ═══════════════════════════════════════════════════════════
+// ── DOM → Streamlit ────────────────────────────────────────────────
 function sendAction(payload){{
   const data=JSON.stringify(payload);
   const wins=[];
@@ -344,9 +413,7 @@ function sendAction(payload){{
   return false;
 }}
 
-// ═══════════════════════════════════════════════════════════
-// RENDERER / CAMERA
-// ═══════════════════════════════════════════════════════════
+// ── Renderer ───────────────────────────────────────────────────────
 const wrap=document.getElementById('wrap');
 const W=wrap.clientWidth,H={height};
 const renderer=new THREE.WebGLRenderer({{antialias:true}});
@@ -355,20 +422,20 @@ renderer.setClearColor(0xffffff,1); wrap.appendChild(renderer.domElement);
 const threeScene=new THREE.Scene(); threeScene.background=new THREE.Color(0xffffff);
 const camera=new THREE.PerspectiveCamera(55,W/H,0.01,5000);
 camera.position.set(8,5,12); camera.lookAt(0,0,0);
-
-// Lights
 threeScene.add(new THREE.AmbientLight(0xffffff,1.0));
 const dl=new THREE.DirectionalLight(0xffffff,0.3); dl.position.set(10,20,10); threeScene.add(dl);
 
-// Orbit
+// ── Orbit ──────────────────────────────────────────────────────────
 let sph={{theta:0.6,phi:0.9,r:18}},tgt=new THREE.Vector3();
 let isRD=false,isMD=false,lm={{x:0,y:0}};
 function applyCamera(){{
-  const sp=Math.sin(sph.phi),cp=Math.cos(sph.phi);
-  camera.position.set(tgt.x+sph.r*sp*Math.sin(sph.theta),tgt.y+sph.r*cp,tgt.z+sph.r*sp*Math.cos(sph.theta));
+  camera.position.set(
+    tgt.x+sph.r*Math.sin(sph.phi)*Math.sin(sph.theta),
+    tgt.y+sph.r*Math.cos(sph.phi),
+    tgt.z+sph.r*Math.sin(sph.phi)*Math.cos(sph.theta));
   camera.lookAt(tgt);
-}}
-applyCamera();
+}} applyCamera();
+
 const cv=renderer.domElement;
 cv.addEventListener('contextmenu',e=>e.preventDefault());
 cv.addEventListener('mousedown',e=>{{
@@ -390,7 +457,7 @@ cv.addEventListener('wheel',e=>{{
   e.preventDefault(); sph.r=Math.max(0.3,Math.min(800,sph.r*(1+e.deltaY*0.001))); applyCamera();
 }},{{passive:false}});
 
-// ─── Background grid + axes ────────────────────────────────
+// ── Background grid + axes ─────────────────────────────────────────
 if(SCENE.showGrid){{
   const g1=new THREE.GridHelper(200,200,0xe0e0e0,0xe0e0e0); g1.material.transparent=true; g1.material.opacity=0.6; threeScene.add(g1);
   threeScene.add(new THREE.GridHelper(200,20,0xbbbbbb,0xbbbbbb));
@@ -401,73 +468,63 @@ if(SCENE.showAxes){{
     threeScene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts.map(p=>new THREE.Vector3(...p))),mat)));
 }}
 
-// ═══════════════════════════════════════════════════════════
-// VERTICAL EPHEMERAL GRID
-// ═══════════════════════════════════════════════════════════
+// ════════════════════════════════════════════════════════════════════
+//  VERTICAL EPHEMERAL GRID
+// ════════════════════════════════════════════════════════════════════
 const VGRID={{
   active:false,
   origin:new THREE.Vector3(),
-  angle:SCENE.gridAngle||0,          // degrees, Y-axis rotation
-  cellSize:SCENE.gridCellSize||10,   // cm
-  extent:SCENE.gridExtent||8,        // cells each side
+  angle:SCENE.gridAngle||0,
+  cellSize:SCENE.gridCellSize||10,
+  extent:SCENE.gridExtent||8,
   group:new THREE.Group(),
-  // Plane axes (computed from angle)
-  axisH:new THREE.Vector3(),  // horizontal axis in grid plane
-  axisV:new THREE.Vector3(0,1,0),  // always world-up
+  axisH:new THREE.Vector3(),
+  axisV:new THREE.Vector3(0,1,0),
   plane:new THREE.Plane(),
-  // Hover indicator
   hoverMesh:null,
-  hoverPos:null, // {{iu,iv,distCm,worldPos}}
+  hoverPos:null,
 }};
 threeScene.add(VGRID.group);
 
 function vgridUpdateAxes(){{
   const a=VGRID.angle*Math.PI/180;
   VGRID.axisH.set(Math.cos(a),0,Math.sin(a));
-  // Normal = perpendicular to axisH in XZ, pointing "outward"
   const normal=new THREE.Vector3(-Math.sin(a),0,Math.cos(a));
   VGRID.plane.setFromNormalAndCoplanarPoint(normal,VGRID.origin);
 }}
 
 function buildVGrid(){{
-  // Clear
   while(VGRID.group.children.length) VGRID.group.remove(VGRID.group.children[0]);
   VGRID.hoverMesh=null;
   if(!VGRID.active) return;
-
   vgridUpdateAxes();
 
   const N=VGRID.extent, S=VGRID.cellSize*US;
   const aH=VGRID.axisH, aV=VGRID.axisV, O=VGRID.origin;
 
-  // Grid lines — lines only, no node spheres
   const matL=new THREE.LineBasicMaterial({{color:0x3a7bd5,transparent:true,opacity:0.55}});
-  const matC=new THREE.LineBasicMaterial({{color:0xf59e0b,transparent:true,opacity:0.9}}); // origin cross
+  const matO=new THREE.LineBasicMaterial({{color:0xf59e0b,opacity:0.9}});
 
-  // Horizontal lines (run along axisH)
+  // Horizontal lines (j = row along aV)
   for(let j=-N;j<=N;j++){{
-    const isO=(j===0);
     const start=O.clone().addScaledVector(aH,-N*S).addScaledVector(aV,j*S);
     const end  =O.clone().addScaledVector(aH, N*S).addScaledVector(aV,j*S);
-    const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([start,end]),isO?matC:matL);
-    VGRID.group.add(line);
+    VGRID.group.add(new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([start,end]),j===0?matO:matL));
   }}
-
-  // Vertical lines (run along axisV)
+  // Vertical lines (i = column along aH)
   for(let i=-N;i<=N;i++){{
-    const isO=(i===0);
     const start=O.clone().addScaledVector(aH,i*S).addScaledVector(aV,-N*S);
     const end  =O.clone().addScaledVector(aH,i*S).addScaledVector(aV, N*S);
-    const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints([start,end]),isO?matC:matL);
-    VGRID.group.add(line);
+    VGRID.group.add(new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([start,end]),i===0?matO:matL));
   }}
 
   // Origin dot
-  const odot=new THREE.Mesh(new THREE.SphereGeometry(0.05,8,6),
-    new THREE.MeshBasicMaterial({{color:0xf59e0b}}));
+  const odot=new THREE.Mesh(new THREE.SphereGeometry(0.05,8,6),new THREE.MeshBasicMaterial({{color:0xf59e0b}}));
   odot.position.copy(O); VGRID.group.add(odot);
 
-  // Hover indicator (invisible until hover)
+  // Hover indicator
   VGRID.hoverMesh=new THREE.Mesh(new THREE.SphereGeometry(0.07,10,8),
     new THREE.MeshBasicMaterial({{color:0x3fb950,transparent:true,opacity:0.9}}));
   VGRID.hoverMesh.visible=false;
@@ -475,36 +532,31 @@ function buildVGrid(){{
 
   // Update HUD
   document.getElementById('ghud').style.display='block';
-  document.getElementById('gh-angle').textContent='Angle : '+VGRID.angle+'°';
+  document.getElementById('gh-ang').textContent='Angle : '+VGRID.angle+'°';
   document.getElementById('gh-cell').textContent='Côté : '+VGRID.cellSize+' cm';
 }}
 
-// Compute snapped grid position from a ray
 function vgridSnap(ray){{
   const hit=new THREE.Vector3();
   if(!ray.ray.intersectPlane(VGRID.plane,hit)) return null;
   const diff=hit.clone().sub(VGRID.origin);
-  const u=diff.dot(VGRID.axisH);
-  const v=diff.y; // axisV = world up
+  const u=diff.dot(VGRID.axisH), v=diff.y;
   const S=VGRID.cellSize*US;
   const iu=Math.round(u/S), iv=Math.round(v/S);
-  const snapped=VGRID.origin.clone()
-    .addScaledVector(VGRID.axisH,iu*S)
-    .addScaledVector(VGRID.axisV,iv*S);
+  const snapped=VGRID.origin.clone().addScaledVector(VGRID.axisH,iu*S).addScaledVector(VGRID.axisV,iv*S);
   const distCm=Math.sqrt((iu*VGRID.cellSize)**2+(iv*VGRID.cellSize)**2);
   return {{worldPos:snapped,iu,iv,distCm,uCm:iu*VGRID.cellSize,vCm:iv*VGRID.cellSize}};
 }}
 
-function activateGrid(worldOrigin,angle){{
+function activateGrid(worldOrigin){{
   VGRID.origin.copy(worldOrigin);
-  if(angle!==undefined) VGRID.angle=angle;
   VGRID.cellSize=SCENE.gridCellSize;
   VGRID.extent=SCENE.gridExtent;
+  VGRID.angle=SCENE.gridAngle||0;
   VGRID.active=true;
   buildVGrid();
   sendAction({{type:'grid_activate',
-    x:VGRID.origin.x/US,y:VGRID.origin.y/US,z:VGRID.origin.z/US,
-    angle:VGRID.angle}});
+    x:VGRID.origin.x/US,y:VGRID.origin.y/US,z:VGRID.origin.z/US,angle:VGRID.angle}});
 }}
 
 function dismissGrid(){{
@@ -514,7 +566,7 @@ function dismissGrid(){{
   sendAction({{type:'grid_dismiss'}});
 }}
 
-// Restore grid from scene
+// Restore from scene
 if(SCENE.gridOrigin){{
   VGRID.origin.set(SCENE.gridOrigin.x*US,SCENE.gridOrigin.y*US,SCENE.gridOrigin.z*US);
   VGRID.angle=SCENE.gridAngle||0;
@@ -524,9 +576,7 @@ if(SCENE.gridOrigin){{
   buildVGrid();
 }}
 
-// ═══════════════════════════════════════════════════════════
-// MATERIALS
-// ═══════════════════════════════════════════════════════════
+// ── Object scene materials ─────────────────────────────────────────
 const MAT={{
   pt:    new THREE.MeshPhongMaterial({{color:0x111111,shininess:10}}),
   ptSel: new THREE.MeshPhongMaterial({{color:0xf59e0b,shininess:60,emissive:0x3d2900}}),
@@ -536,16 +586,9 @@ const MAT={{
   snap:  new THREE.MeshBasicMaterial({{color:0x1a73e8,transparent:true,opacity:0.75}}),
 }};
 const ptGeo=new THREE.SphereGeometry(0.06,10,8);
-
-// ═══════════════════════════════════════════════════════════
-// VIEWER SELECTION (JS-internal)
-// ═══════════════════════════════════════════════════════════
 let vSel={{type:null,id:null,oid:null}};
-
-// ═══════════════════════════════════════════════════════════
-// BUILD OBJECT SCENE
-// ═══════════════════════════════════════════════════════════
 const objGroups={{}};
+
 function buildScene(data){{
   Object.values(objGroups).forEach(g=>threeScene.remove(g));
   Object.keys(objGroups).forEach(k=>delete objGroups[k]);
@@ -558,7 +601,6 @@ function buildScene(data){{
     const ptMap={{}};
     obj.points.forEach(p=>{{ptMap[p.id]=p;}});
 
-    // Points (OD only)
     if(MODE==='object_designer'){{
       obj.points.forEach(p=>{{
         let mat=p.coin?MAT.ptCoin.clone()
@@ -571,7 +613,6 @@ function buildScene(data){{
       }});
     }}
 
-    // Segments
     obj.segments.forEach(s=>{{
       const pa=ptMap[s.a],pb=ptMap[s.b]; if(!pa||!pb) return;
       const isSel=(vSel.type==='segment'&&vSel.id===s.id);
@@ -584,7 +625,6 @@ function buildScene(data){{
       g.add(line);
     }});
 
-    // Coincident in PE
     if(MODE==='plan_editor'){{
       obj.points.forEach(p=>{{
         if(p.coin){{
@@ -595,14 +635,12 @@ function buildScene(data){{
       }});
     }}
 
-    // Selection bbox
     if(obj.sel&&obj.points.length>0){{
       const bb=new THREE.Box3();
       obj.points.forEach(p=>bb.expandByPoint(new THREE.Vector3(p.x*US,p.y*US,p.z*US)));
       if(!bb.isEmpty()){{ bb.min.subScalar(0.1); bb.max.addScalar(0.1); g.add(new THREE.Box3Helper(bb,0x1a73e8)); }}
     }}
 
-    // PE: proxy for picking
     if(MODE==='plan_editor'){{
       let bb=new THREE.Box3();
       if(obj.points.length>0) obj.points.forEach(p=>bb.expandByPoint(new THREE.Vector3(p.x*US,p.y*US,p.z*US)));
@@ -614,7 +652,6 @@ function buildScene(data){{
       proxy.position.copy(ct); proxy.userData={{type:'object',id:obj.id}}; g.add(proxy);
     }}
 
-    // Anchor sphere (PE, selected)
     if(MODE==='plan_editor'&&obj.sel){{
       const m=new THREE.Mesh(new THREE.SphereGeometry(0.08,10,8),
         new THREE.MeshBasicMaterial({{color:0x00ff88}}));
@@ -626,7 +663,7 @@ function buildScene(data){{
 }}
 buildScene(SCENE);
 
-// Snap indicator (OD)
+// Snap indicator
 let snapSph=null;
 if(SCENE.snap&&MODE==='object_designer'){{
   snapSph=new THREE.Mesh(new THREE.SphereGeometry(0.09,10,8),MAT.snap.clone());
@@ -644,14 +681,13 @@ if(SCENE.snap&&MODE==='object_designer'){{
     const h=new THREE.Vector3(); ray2.ray.intersectPlane(gp0,h);
     let near=null,minD=SCENE.snapDist*US;
     allPts.forEach(ap=>{{const d=h.distanceTo(ap.w);if(d<minD){{minD=d;near=ap;}}}});
-    if(near){{snapSph.position.copy(near.w);snapSph.visible=true;}} else snapSph.visible=false;
+    if(near){{snapSph.position.copy(near.w);snapSph.visible=true;}}else snapSph.visible=false;
   }});
 }}
 
-// Coordinates HUD
+// Coords HUD
 const gndPl=new THREE.Plane(new THREE.Vector3(0,1,0),0);
-const coordDiv=document.getElementById('coords');
-const statusDiv=document.getElementById('status');
+const coordDiv=document.getElementById('coords'),statusDiv=document.getElementById('status');
 function updateCoords(ev){{
   const r=cv.getBoundingClientRect();
   const m=new THREE.Vector2(((ev.clientX-r.left)/W)*2-1,-((ev.clientY-r.top)/H)*2+1);
@@ -660,12 +696,9 @@ function updateCoords(ev){{
     coordDiv.textContent=`X:${{(h.x/US).toFixed(1)}} · Y:${{(h.y/US).toFixed(1)}} · Z:${{(h.z/US).toFixed(1)}} cm`;
 }}
 
-// ═══════════════════════════════════════════════════════════
-// HOVER — grid snap indicator
-// ═══════════════════════════════════════════════════════════
+// Hover grid snap
 const pickRay=new THREE.Raycaster();
 pickRay.params.Line={{threshold:0.06}};
-
 window.addEventListener('mousemove',ev=>{{
   if(!VGRID.active||!VGRID.hoverMesh) return;
   const r=cv.getBoundingClientRect();
@@ -673,108 +706,89 @@ window.addEventListener('mousemove',ev=>{{
   pickRay.setFromCamera(m,camera);
   const snapped=vgridSnap(pickRay);
   if(snapped){{
-    VGRID.hoverMesh.position.copy(snapped.worldPos);
-    VGRID.hoverMesh.visible=true;
-    VGRID.hoverPos=snapped;
+    VGRID.hoverMesh.position.copy(snapped.worldPos); VGRID.hoverMesh.visible=true; VGRID.hoverPos=snapped;
     document.getElementById('gh-dist').textContent=
-      `Dist origine : ${{snapped.distCm.toFixed(1)}} cm  (H:${{snapped.uCm.toFixed(1)}} V:${{snapped.vCm.toFixed(1)}})`;
-  }} else {{
+      `Dist: ${{snapped.distCm.toFixed(1)}} cm  H:${{snapped.uCm.toFixed(1)}} V:${{snapped.vCm.toFixed(1)}}`;
+  }}else{{
     VGRID.hoverMesh.visible=false; VGRID.hoverPos=null;
     document.getElementById('gh-dist').textContent='Survolez la grille…';
   }}
 }});
 
-// ═══════════════════════════════════════════════════════════
-// CLICK HANDLER
-// ═══════════════════════════════════════════════════════════
+// Click handler
 cv.addEventListener('click',ev=>{{
   if(isRD) return;
   const r=cv.getBoundingClientRect();
   const m=new THREE.Vector2(((ev.clientX-r.left)/W)*2-1,-((ev.clientY-r.top)/H)*2+1);
   pickRay.setFromCamera(m,camera);
 
-  // 1) Grid hover position → create/place
+  // 1) Grille active + hover → créer/placer
   if(VGRID.active&&VGRID.hoverPos){{
     const p=VGRID.hoverPos.worldPos;
-    const payload={{
+    sendAction({{
+      type:MODE==='object_designer'?'grid_click_od':'grid_click_pe',
       x:p.x/US,y:p.y/US,z:p.z/US,
       gridOriginX:VGRID.origin.x/US,gridOriginY:VGRID.origin.y/US,gridOriginZ:VGRID.origin.z/US,
       gridAngle:VGRID.angle,
-      type:MODE==='object_designer'?'grid_click_od':'grid_click_pe',
-    }};
-    sendAction(payload);
-    statusDiv.textContent=`Nœud (${{(p.x/US).toFixed(1)}}, ${{(p.y/US).toFixed(1)}}, ${{(p.z/US).toFixed(1)}}) → panneau ↓`;
+    }});
+    if(MODE==='object_designer'){{
+      // Flash feedback immédiat
+      const flash=document.getElementById('pt-flash');
+      flash.textContent=`✓ Point (${{(p.x/US).toFixed(1)}}, ${{(p.y/US).toFixed(1)}}, ${{(p.z/US).toFixed(1)}}) cm`;
+      flash.style.display='block'; setTimeout(()=>{{flash.style.display='none';}},2000);
+    }}
+    // La grille RESTE active — on ne l'efface pas
     return;
   }}
 
-  // 2) Pick objects / points
+  // 2) Pick objets / points
   const tgts=[];
   Object.values(objGroups).forEach(g=>g.traverse(c=>{{if(c.userData&&c.userData.type)tgts.push(c);}}));
   const hits=pickRay.intersectObjects(tgts,false);
-
   if(hits.length>0){{
     const ud=hits[0].object.userData;
     if(MODE==='plan_editor'){{
-      const oid=ud.oid||ud.id;
-      vSel={{type:'object',id:oid,oid}};
+      const oid=ud.oid||ud.id; vSel={{type:'object',id:oid,oid}};
       sendAction({{type:'select_object',id:oid}});
-      statusDiv.textContent='Objet #'+oid+' sélectionné';
-    }} else {{
-      // OD mode: select + activate grid at world position of the point
-      vSel={{type:ud.type,id:ud.id,oid:ud.oid}};
-      buildScene(SCENE);
+      statusDiv.textContent='Objet #'+oid;
+    }}else{{
+      vSel={{type:ud.type,id:ud.id,oid:ud.oid}}; buildScene(SCENE);
       statusDiv.textContent=(ud.type==='point'?'Point':'Segment')+' #'+ud.id+' — Suppr=supprimer';
-
-      // Activate vertical grid at this point's world position
       if(ud.type==='point'){{
         const obj=SCENE.objects.find(o=>o.id===ud.oid);
         if(obj){{
           const pt=obj.points.find(p=>p.id===ud.id);
-          if(pt){{
-            const wx=(obj.pos.x+pt.x)*US;
-            const wy=(obj.pos.y+pt.y)*US;
-            const wz=(obj.pos.z+pt.z)*US;
-            activateGrid(new THREE.Vector3(wx,wy,wz), VGRID.angle);
-            statusDiv.textContent='Point #'+ud.id+' — grille activée · Suppr=supprimer';
-          }}
+          if(pt) activateGrid(new THREE.Vector3((obj.pos.x+pt.x)*US,(obj.pos.y+pt.y)*US,(obj.pos.z+pt.z)*US));
         }}
       }}
     }}
     return;
   }}
 
-  // 3) Click on ground → activate grid there
+  // 3) Sol → grille
   const gHit=new THREE.Vector3();
   if(pickRay.ray.intersectPlane(gndPl,gHit)){{
-    activateGrid(gHit, VGRID.angle);
-    statusDiv.textContent='Grille verticale activée — survolez pour snapper, cliquez pour créer';
+    activateGrid(gHit);
+    statusDiv.textContent='Grille verticale — survolez pour snapper, cliquez pour créer';
   }}
 }});
 
-// ═══════════════════════════════════════════════════════════
-// KEYBOARD
-// ═══════════════════════════════════════════════════════════
+// Keyboard
 window.addEventListener('keydown',ev=>{{
   if((ev.key==='Delete'||ev.key==='Backspace')&&MODE==='object_designer'){{
     if(vSel.type==='point'){{
-      sendAction({{type:'delete_point',id:vSel.id,
-        gridOriginX:VGRID.origin.x/US,gridOriginY:VGRID.origin.y/US,gridOriginZ:VGRID.origin.z/US,
-        gridAngle:VGRID.angle}});
-      statusDiv.textContent='Point #'+vSel.id+' supprimé'; vSel={{type:null,id:null,oid:null}};
-    }} else if(vSel.type==='segment'){{
-      sendAction({{type:'delete_segment',id:vSel.id,
-        gridOriginX:VGRID.origin.x/US,gridOriginY:VGRID.origin.y/US,gridOriginZ:VGRID.origin.z/US,
-        gridAngle:VGRID.angle}});
-      statusDiv.textContent='Segment #'+vSel.id+' supprimé'; vSel={{type:null,id:null,oid:null}};
+      sendAction({{type:'delete_point',id:vSel.id,gridOriginX:VGRID.origin.x/US,gridOriginY:VGRID.origin.y/US,gridOriginZ:VGRID.origin.z/US,gridAngle:VGRID.angle}});
+      vSel={{type:null,id:null,oid:null}};
+    }}else if(vSel.type==='segment'){{
+      sendAction({{type:'delete_segment',id:vSel.id,gridOriginX:VGRID.origin.x/US,gridOriginY:VGRID.origin.y/US,gridOriginZ:VGRID.origin.z/US,gridAngle:VGRID.angle}});
+      vSel={{type:null,id:null,oid:null}};
     }}
     ev.preventDefault();
   }}
   if(ev.key==='Escape'){{ dismissGrid(); statusDiv.textContent='Grille fermée'; }}
 }});
 
-// ═══════════════════════════════════════════════════════════
-// RENDER LOOP + RESIZE
-// ═══════════════════════════════════════════════════════════
+// Render loop
 (function loop(){{ requestAnimationFrame(loop); renderer.render(threeScene,camera); }})();
 new ResizeObserver(()=>{{
   const nw=wrap.clientWidth; renderer.setSize(nw,{height});
@@ -789,63 +803,97 @@ new ResizeObserver(()=>{{
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GRID CONTROL BAR (displayed below viewer when grid is active)
+# GRID CONTROL BAR — placée sous le viewer, toujours visible
 # ─────────────────────────────────────────────────────────────────────────────
-def render_grid_controls():
-    """Barre de contrôle grille éphémère — apparaît sous le viewer quand la grille est active."""
+ANGLE_PRESETS=[0,15,30,45,60,90,120,135,150,180,225,270,315]
+
+def render_grid_controls(obj_df, sel_oid):
+    """Barre de configuration de la grille éphémère avec slider d'angle proéminent."""
     go=st.session_state.get("grid_origin")
-    if go is None:
-        # Hint when no grid
-        st.markdown('<div class="info-box" style="margin:4px 0">💡 <b>Grille éphémère</b> : '
-                    'cliquez un point existant ou le sol dans la vue 3D pour activer la grille verticale.</div>',
-                    unsafe_allow_html=True)
-        return
 
-    st.markdown('<div class="grid-bar">'
-                '<div class="grid-bar-title">⊞ grille éphémère active</div>', unsafe_allow_html=True)
+    st.markdown('<div class="grid-bar">', unsafe_allow_html=True)
+    st.markdown('<div class="grid-bar-title">⊞ GRILLE ÉPHÉMÈRE VERTICALE</div>', unsafe_allow_html=True)
 
-    c1,c2,c3=st.columns([3,3,1])
+    # ── Angle : affichage grand + slider pleine largeur ───────────────
+    ang=int(st.session_state["grid_angle"])
+    st.markdown(f'<div class="angle-big">{ang}°</div>'
+                f'<div class="angle-label">ANGLE DE LA GRILLE — 1 cran = 1°</div>',
+                unsafe_allow_html=True)
 
-    # Cell size
+    new_ang=st.slider(
+        "angle_slider", min_value=0, max_value=359,
+        value=ang, step=1, key="gc_ang",
+        label_visibility="collapsed",
+        help="Faites glisser pour orienter la grille autour de l'axe vertical")
+
+    # Presets pleine largeur
+    preset_cols=st.columns(len(ANGLE_PRESETS))
+    for i,p in enumerate(ANGLE_PRESETS):
+        active=(ang==p)
+        style="background:#1a73e8;color:#fff;" if active else ""
+        if preset_cols[i].button(f"{p}°", key=f"ap_{p}",
+                                  use_container_width=True,
+                                  help=f"Angle {p}°"):
+            st.session_state["grid_angle"]=p
+            st.session_state.pop("gc_ang",None)
+            if sel_oid is not None:
+                save_grid_to_object(obj_df, sel_oid)
+            st.rerun()
+
+    st.markdown("---", unsafe_allow_html=False)
+
+    # ── Côté cellule + Nb carrés + Fermer ────────────────────────────
+    c1, c2, c3 = st.columns([3,3,1])
+
     new_cell=c1.number_input(
         "Côté d'une cellule (cm)",
-        min_value=0.5, max_value=500.0,
+        min_value=0.1, max_value=500.0,
         value=float(st.session_state["grid_cell_size"]),
-        step=0.5, format="%.1f", key="gc_cell")
-    if new_cell != st.session_state["grid_cell_size"]:
-        st.session_state["grid_cell_size"]=new_cell; st.rerun()
+        step=0.1, format="%.1f", key="gc_cell",
+        help="Précision au mm : 0.1 cm = 1 mm")
 
-    # Angle slider — every degree
-    new_angle=c2.slider(
-        "Angle de la grille (°)",
-        min_value=0, max_value=359,
-        value=int(st.session_state["grid_angle"]),
-        step=1, key="gc_angle",
-        help="Orientation de la grille autour de l'axe vertical — 1° par cran")
-    if new_angle != st.session_state["grid_angle"]:
-        st.session_state["grid_angle"]=new_angle; st.rerun()
+    new_ext=c2.number_input(
+        "Nb de carrés de chaque côté",
+        min_value=1, max_value=50,
+        value=int(st.session_state["grid_extent"]),
+        step=1, key="gc_ext",
+        help="Étendue de la grille de chaque côté de l'origine")
 
     c3.markdown("<br>",unsafe_allow_html=True)
-    if c3.button("✕",key="close_grid_bar",help="Fermer la grille"):
-        st.session_state["grid_origin"]=None; st.rerun()
+    if c3.button("✕", key="close_grid_bar", help="Fermer la grille"):
+        st.session_state["grid_origin"]=None
+        st.session_state["grid_angle"]=new_ang  # garder l'angle courant
+        if sel_oid is not None: save_grid_to_object(obj_df, sel_oid)
+        st.rerun()
 
-    # Extent
-    new_ext=st.slider(
-        "Étendue (cellules de chaque côté)",
-        min_value=2, max_value=20,
-        value=int(st.session_state["grid_extent"]),
-        step=1, key="gc_ext")
-    if new_ext != st.session_state["grid_extent"]:
-        st.session_state["grid_extent"]=new_ext; st.rerun()
+    # Infos
+    if go:
+        st.markdown(
+            f'<div class="grid-info-row">'
+            f'<span>Origine : X {go["x"]:.1f} · Y {go["y"]:.1f} · Z {go["z"]:.1f} cm</span>'
+            f'<span>|</span>'
+            f'<span>Grille {2*new_ext}×{2*new_ext} carrés de {new_cell:.1f} cm</span>'
+            f'</div>', unsafe_allow_html=True)
+    else:
+        st.markdown(
+            '<div style="font-size:10px;color:#484f58;margin-top:4px">'
+            '💡 Cliquez un point ou le sol dans la vue 3D pour placer la grille.</div>',
+            unsafe_allow_html=True)
 
-    ox,oy,oz=go["x"],go["y"],go["z"]
-    st.markdown(
-        f'<div style="font-size:10px;color:#484f58;margin-top:2px">'
-        f'Origine : X {ox:.1f} · Y {oy:.1f} · Z {oz:.1f} cm &nbsp;|&nbsp; '
-        f'Angle : {st.session_state["grid_angle"]}° &nbsp;|&nbsp; '
-        f'Côté : {st.session_state["grid_cell_size"]:.1f} cm</div>',
-        unsafe_allow_html=True)
-    st.markdown('</div>',unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    # ── Détection des changements et sauvegarde ───────────────────────
+    changed=False
+    if new_ang!=ang:
+        st.session_state["grid_angle"]=new_ang; changed=True
+    if abs(new_cell-float(st.session_state["grid_cell_size"]))>0.001:
+        st.session_state["grid_cell_size"]=new_cell; changed=True
+    if new_ext!=int(st.session_state["grid_extent"]):
+        st.session_state["grid_extent"]=new_ext; changed=True
+
+    if changed and sel_oid is not None:
+        save_grid_to_object(obj_df, sel_oid)
+        # Pas de st.rerun() ici — le changement sera visible au prochain cycle naturel
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -855,21 +903,19 @@ def _obj_idx(obj_df,oid):
     m=obj_df.index[obj_df["object_id"]==oid]; return m[0] if len(m) else None
 
 def panel_plan_editor(obj_df,pts_df,seg_df,sel_oid,coinc_ids):
-
-    # Pending placement
     pending=st.session_state.get("pending_place")
     if pending:
         st.markdown(
             f'<div class="pending-box">📍 <strong>Nœud grille cliqué</strong> : '
-            f'X {pending["x"]:.1f} · Y {pending["y"]:.1f} · Z {pending["z"]:.1f} cm<br>'
-            f'Sélectionnez un objet et cliquez "Placer ici".</div>', unsafe_allow_html=True)
+            f'X {pending["x"]:.1f} · Y {pending["y"]:.1f} · Z {pending["z"]:.1f} cm</div>',
+            unsafe_allow_html=True)
         if sel_oid is not None:
-            row=obj_df[obj_df["object_id"]==sel_oid]
-            if not row.empty:
-                o=row.iloc[0]
+            rows=obj_df[obj_df["object_id"]==sel_oid]
+            if not rows.empty:
+                o=rows.iloc[0]
                 ax,ay,az=float(o.get("anchor_x",0)),float(o.get("anchor_y",0)),float(o.get("anchor_z",0))
                 npx,npy,npz=pending["x"]-ax,pending["y"]-ay,pending["z"]-az
-                st.markdown(f'<div class="info-box">Ancre ({ax:.1f},{ay:.1f},{az:.1f}) → obj à ({npx:.1f},{npy:.1f},{npz:.1f}) cm</div>',unsafe_allow_html=True)
+                st.markdown(f'<div class="info-box">Ancre ({ax:.1f},{ay:.1f},{az:.1f}) → objet à ({npx:.1f},{npy:.1f},{npz:.1f}) cm</div>',unsafe_allow_html=True)
                 if st.button("📦 Placer l'objet ici",key="do_place"):
                     idx=_obj_idx(obj_df,sel_oid)
                     if idx is not None:
@@ -882,15 +928,14 @@ def panel_plan_editor(obj_df,pts_df,seg_df,sel_oid,coinc_ids):
 
     if coinc_ids:
         st.markdown(f'<div class="pending-box" style="background:#1f0d0d;border-color:#5a1a1a;color:#f78166">'
-                    f'⚠️ <strong>{len(coinc_ids)} points coïncidents</strong> (rouge dans la vue)</div>',unsafe_allow_html=True)
+                    f'⚠️ {len(coinc_ids)} points coïncidents (rouge dans la vue)</div>',unsafe_allow_html=True)
 
     if sel_oid is None:
-        st.markdown('<div class="info-box">👆 Cliquez un objet dans la vue ou dans la liste.</div>',unsafe_allow_html=True)
+        st.markdown('<div class="info-box">👆 Cliquez un objet dans la vue ou la liste.</div>',unsafe_allow_html=True)
         return
-
-    row=obj_df[obj_df["object_id"]==sel_oid]
-    if row.empty: return
-    obj=row.iloc[0]
+    rows=obj_df[obj_df["object_id"]==sel_oid]
+    if rows.empty: return
+    obj=rows.iloc[0]
     px,py,pz=float(obj["pos_x"]),float(obj["pos_y"]),float(obj["pos_z"])
     qx,qy,qz,qw=float(obj["rot_x"]),float(obj["rot_y"]),float(obj["rot_z"]),float(obj["rot_w"])
     ex,ey,ez=quat_to_euler(qx,qy,qz,qw)
@@ -909,21 +954,20 @@ def panel_plan_editor(obj_df,pts_df,seg_df,sel_oid,coinc_ids):
         f'<div class="pos-axis"><span>X</span>{px:.1f}</div>'
         f'<div class="pos-axis"><span>Y</span>{py:.1f}</div>'
         f'<div class="pos-axis"><span>Z</span>{pz:.1f}</div>'
-        f'<div class="pos-axis" style="margin-left:10px"><span>RY</span>{ey:.1f}°</div>'
+        f'<div class="pos-axis" style="margin-left:8px"><span>RY</span>{ey:.1f}°</div>'
         f'</div>',unsafe_allow_html=True)
 
     tabs=st.tabs(["🕹 Déplacer","🔄 Pivoter","📐 Échelle","⚓ Ancre","📍 Exact","↗ Aligner","🗑"])
 
     with tabs[0]:
-        step=st.number_input("Pas (cm)",min_value=0.1,max_value=9999.0,
-            value=st.session_state["move_step"],step=0.1,format="%.1f",key="v_ms")
+        step=st.number_input("Pas (cm)",min_value=0.1,max_value=9999.0,value=st.session_state["move_step"],step=0.1,format="%.1f",key="v_ms")
         st.session_state["move_step"]=step
         def _mv(dx=0,dy=0,dz=0):
             idx=_obj_idx(obj_df,sel_oid)
             if idx is None: return
             df2=obj_df.copy(); df2.at[idx,"pos_x"]+=dx; df2.at[idx,"pos_y"]+=dy; df2.at[idx,"pos_z"]+=dz
             save_parquet(df2,OBJ_KEY); st.rerun()
-        st.markdown('<p class="move-lbl">Horizontal X/Z</p>',unsafe_allow_html=True)
+        st.markdown('<p class="move-lbl">X / Z</p>',unsafe_allow_html=True)
         _,tc,_=st.columns([1,1,1])
         if tc.button("⬆ −Z",key="m_mz",use_container_width=True): _mv(dz=-step)
         l,mc,r=st.columns(3)
@@ -932,39 +976,37 @@ def panel_plan_editor(obj_df,pts_df,seg_df,sel_oid,coinc_ids):
         if r.button("▶ +X",key="m_px",use_container_width=True): _mv(dx=+step)
         _,bc,_=st.columns([1,1,1])
         if bc.button("⬇ +Z",key="m_pz",use_container_width=True): _mv(dz=+step)
-        st.markdown('<p class="move-lbl">Vertical Y</p>',unsafe_allow_html=True)
+        st.markdown('<p class="move-lbl">Y</p>',unsafe_allow_html=True)
         y1,y2,y3=st.columns(3)
         if y1.button("▲ +Y",key="m_py",use_container_width=True): _mv(dy=+step)
         y2.markdown(f"<div style='text-align:center;padding:5px 0;font-size:10px;color:#888'>Y{py:.1f}</div>",unsafe_allow_html=True)
         if y3.button("▼ −Y",key="m_my",use_container_width=True): _mv(dy=-step)
 
     with tabs[1]:
-        rstep=st.number_input("Pas (°)",min_value=0.1,max_value=180.0,
-            value=st.session_state["rot_step"],step=0.5,format="%.1f",key="v_rs")
+        rstep=st.number_input("Pas (°)",min_value=0.1,max_value=180.0,value=st.session_state["rot_step"],step=0.5,format="%.1f",key="v_rs")
         st.session_state["rot_step"]=rstep
         def _rot(axis,deg):
             idx=_obj_idx(obj_df,sel_oid)
             if idx is None: return
             df2=obj_df.copy()
-            nx,ny,nz,nw=compose_rot(float(df2.at[idx,"rot_x"]),float(df2.at[idx,"rot_y"]),
-                float(df2.at[idx,"rot_z"]),float(df2.at[idx,"rot_w"]),axis,deg)
-            df2.at[idx,"rot_x"]=nx; df2.at[idx,"rot_y"]=ny; df2.at[idx,"rot_z"]=nz; df2.at[idx,"rot_w"]=nw
+            nx,ny,nz,nw=compose_rot(float(df2.at[idx,"rot_x"]),float(df2.at[idx,"rot_y"]),float(df2.at[idx,"rot_z"]),float(df2.at[idx,"rot_w"]),axis,deg)
+            df2.at[idx,"rot_x"]=nx;df2.at[idx,"rot_y"]=ny;df2.at[idx,"rot_z"]=nz;df2.at[idx,"rot_w"]=nw
             save_parquet(df2,OBJ_KEY); st.rerun()
-        for ll,ax in [("Axe Y — horizontal","y"),("Axe X — tilt","x"),("Axe Z — roulis","z")]:
+        for ll,ax in [("Axe Y","y"),("Axe X","x"),("Axe Z","z")]:
             st.markdown(f'<p class="move-lbl">{ll}</p>',unsafe_allow_html=True)
             c1,c2=st.columns(2)
             if c1.button(f"↺ −{rstep:.1f}°",key=f"r{ax}m",use_container_width=True): _rot(ax,-rstep)
             if c2.button(f"↻ +{rstep:.1f}°",key=f"r{ax}p",use_container_width=True): _rot(ax,+rstep)
         st.markdown(f'<div class="info-box">RX {ex:.1f}° RY {ey:.1f}° RZ {ez:.1f}°</div>',unsafe_allow_html=True)
-        if st.button("⟲ Réinitialiser",key="rot_rst"):
+        if st.button("⟲ Reset rotation",key="rot_rst"):
             idx=_obj_idx(obj_df,sel_oid)
-            if idx:
-                df2=obj_df.copy(); df2.at[idx,"rot_x"]=0; df2.at[idx,"rot_y"]=0; df2.at[idx,"rot_z"]=0; df2.at[idx,"rot_w"]=1
+            if idx is not None:
+                df2=obj_df.copy(); df2.at[idx,"rot_x"]=0;df2.at[idx,"rot_y"]=0;df2.at[idx,"rot_z"]=0;df2.at[idx,"rot_w"]=1
                 save_parquet(df2,OBJ_KEY); st.rerun()
 
     with tabs[2]:
-        sstep=st.number_input("Pas",min_value=0.01,max_value=100.0,value=st.session_state["scale_step"],step=0.05,format="%.2f",key="v_ss")
-        st.session_state["scale_step"]=sstep; unif=st.checkbox("Uniforme",value=True,key="scl_u")
+        sstep=st.number_input("Pas",0.01,100.0,st.session_state["scale_step"],0.05,"%.2f",key="v_ss")
+        st.session_state["scale_step"]=sstep; unif=st.checkbox("Uniforme",True,key="scl_u")
         def _scl(ds,ax=None):
             idx=_obj_idx(obj_df,sel_oid)
             if idx is None: return
@@ -983,17 +1025,16 @@ def panel_plan_editor(obj_df,pts_df,seg_df,sel_oid,coinc_ids):
 
     with tabs[3]:
         ax_=float(obj.get("anchor_x",0)); ay_=float(obj.get("anchor_y",0)); az_=float(obj.get("anchor_z",0))
-        st.markdown(f'<div class="info-box">Ancre locale actuelle : ({ax_:.1f},{ay_:.1f},{az_:.1f}) cm<br>'
-                    f'Point vert 🟢 dans la vue = ancre. Lors d\'un placement, l\'ancre est positionnée sur le nœud grille.</div>',unsafe_allow_html=True)
+        st.markdown(f'<div class="info-box">Ancre : ({ax_:.1f},{ay_:.1f},{az_:.1f}) cm — 🟢 dans la vue</div>',unsafe_allow_html=True)
         o_pts=pts_df[pts_df["object_id"]==sel_oid] if not pts_df.empty else pd.DataFrame()
         if not o_pts.empty:
             pt_map={f"#{int(r['point_id'])} ({float(r['x']):.1f},{float(r['y']):.1f},{float(r['z']):.1f})":(float(r["x"]),float(r["y"]),float(r["z"])) for _,r in o_pts.iterrows()}
             pt_map["Origine (0,0,0)"]=(0.,0.,0.)
-            ch=st.selectbox("Point d'ancrage",list(pt_map.keys()),key="anch_pick")
+            ch=st.selectbox("Ancre",list(pt_map.keys()),key="anch_pick")
             if st.button("Définir",key="set_anch"):
                 px2,py2,pz2=pt_map[ch]; idx=_obj_idx(obj_df,sel_oid)
                 if idx is not None:
-                    df2=obj_df.copy(); df2.at[idx,"anchor_x"]=px2; df2.at[idx,"anchor_y"]=py2; df2.at[idx,"anchor_z"]=pz2
+                    df2=obj_df.copy(); df2.at[idx,"anchor_x"]=px2;df2.at[idx,"anchor_y"]=py2;df2.at[idx,"anchor_z"]=pz2
                     save_parquet(df2,OBJ_KEY); st.success("Ancre mise à jour"); st.rerun()
 
     with tabs[4]:
@@ -1004,32 +1045,30 @@ def panel_plan_editor(obj_df,pts_df,seg_df,sel_oid,coinc_ids):
         if st.button("Appliquer position",key="abs_pos"):
             idx=_obj_idx(obj_df,sel_oid)
             if idx is not None:
-                df2=obj_df.copy(); df2.at[idx,"pos_x"]=npx_; df2.at[idx,"pos_y"]=npy_; df2.at[idx,"pos_z"]=npz_
+                df2=obj_df.copy(); df2.at[idx,"pos_x"]=npx_;df2.at[idx,"pos_y"]=npy_;df2.at[idx,"pos_z"]=npz_
                 save_parquet(df2,OBJ_KEY); st.rerun()
 
     with tabs[5]:
-        o_pts=pts_df[pts_df["object_id"]==sel_oid] if not pts_df.empty else pd.DataFrame()
-        if o_pts.empty: st.info("Ajoutez d'abord des points.")
+        o_pts2=pts_df[pts_df["object_id"]==sel_oid] if not pts_df.empty else pd.DataFrame()
+        if o_pts2.empty: st.info("Ajoutez des points d'abord.")
         else:
-            pt_map2={f"#{int(r['point_id'])} ({float(r['x']):.1f},{float(r['y']):.1f},{float(r['z']):.1f})":(float(r["x"]),float(r["y"]),float(r["z"])) for _,r in o_pts.iterrows()}
-            ref_lbl=st.selectbox("Point de référence (local)",list(pt_map2.keys()),key="aref")
-            ref=pt_map2[ref_lbl]
+            pt_map3={f"#{int(r['point_id'])} ({float(r['x']):.1f},{float(r['y']):.1f},{float(r['z']):.1f})":(float(r["x"]),float(r["y"]),float(r["z"])) for _,r in o_pts2.iterrows()}
+            ref=pt_map3[st.selectbox("Point de référence",list(pt_map3.keys()),key="aref")]
             c1,c2,c3=st.columns(3)
             tx=c1.number_input("Cible X",value=px,step=1.0,format="%.1f",key=f"tx{sel_oid}")
             ty=c2.number_input("Cible Y",value=py,step=1.0,format="%.1f",key=f"ty{sel_oid}")
             tz=c3.number_input("Cible Z",value=pz,step=1.0,format="%.1f",key=f"tz{sel_oid}")
-            pending2=st.session_state.get("pending_place")
-            if pending2:
-                if st.button(f"🎯 Grille ({pending2['x']:.1f},{pending2['y']:.1f},{pending2['z']:.1f})",key="grid_tgt"):
-                    tx,ty,tz=pending2["x"],pending2["y"],pending2["z"]
+            p2=st.session_state.get("pending_place")
+            if p2 and st.button(f"🎯 Grille ({p2['x']:.1f},{p2['y']:.1f},{p2['z']:.1f})",key="grid_tgt"):
+                tx,ty,tz=p2["x"],p2["y"],p2["z"]
             if st.button("↗ Aligner",key="do_align",use_container_width=True):
                 idx=_obj_idx(obj_df,sel_oid)
                 if idx is not None:
-                    df2=obj_df.copy(); df2.at[idx,"pos_x"]=tx-ref[0]; df2.at[idx,"pos_y"]=ty-ref[1]; df2.at[idx,"pos_z"]=tz-ref[2]
+                    df2=obj_df.copy(); df2.at[idx,"pos_x"]=tx-ref[0];df2.at[idx,"pos_y"]=ty-ref[1];df2.at[idx,"pos_z"]=tz-ref[2]
                     save_parquet(df2,OBJ_KEY); st.rerun()
 
     with tabs[6]:
-        st.warning(f"Supprimer **{obj['name']}** et tous ses points / segments ?")
+        st.warning(f"Supprimer {obj['name']} ?")
         if st.button("🗑 Confirmer",key="del_obj_c"):
             for d_,k_ in [(obj_df[obj_df["object_id"]!=sel_oid],OBJ_KEY),
                           (pts_df[pts_df["object_id"]!=sel_oid] if not pts_df.empty else pts_df,PTS_KEY),
@@ -1043,37 +1082,18 @@ def panel_plan_editor(obj_df,pts_df,seg_df,sel_oid,coinc_ids):
 # ─────────────────────────────────────────────────────────────────────────────
 def panel_object_designer(obj_df,pts_df,seg_df,sel_oid):
 
-    pending=st.session_state.get("pending_pt")
-    if pending and sel_oid is not None:
-        st.markdown(
-            f'<div class="pending-box">📍 <strong>Nœud grille cliqué</strong> : '
-            f'X {pending["x"]:.1f} · Y {pending["y"]:.1f} · Z {pending["z"]:.1f} cm<br>'
-            f'Relatif à l\'objet (pos_x={float(obj_df[obj_df["object_id"]==sel_oid].iloc[0]["pos_x"]):.1f})</div>',
-            unsafe_allow_html=True)
-        obj_row=obj_df[obj_df["object_id"]==sel_oid]
-        if not obj_row.empty:
-            o=obj_row.iloc[0]
-            lx=pending["x"]-float(o["pos_x"]); ly=pending["y"]-float(o["pos_y"]); lz=pending["z"]-float(o["pos_z"])
-            st.markdown(f'<div class="info-box">Coordonnées locales : ({lx:.1f},{ly:.1f},{lz:.1f}) cm</div>',unsafe_allow_html=True)
-        c1,c2=st.columns(2)
-        if c1.button("✅ Créer point ici",key="conf_gpt"):
-            obj_row2=obj_df[obj_df["object_id"]==sel_oid]
-            if not obj_row2.empty:
-                o2=obj_row2.iloc[0]
-                lx2=pending["x"]-float(o2["pos_x"]); ly2=pending["y"]-float(o2["pos_y"]); lz2=pending["z"]-float(o2["pos_z"])
-                pid=next_id(pts_df,"point_id")
-                p2=pd.concat([pts_df,pd.DataFrame([{"point_id":pid,"object_id":sel_oid,"x":lx2,"y":ly2,"z":lz2}])],ignore_index=True)
-                save_parquet(p2,PTS_KEY)
-            st.session_state["pending_pt"]=None; st.rerun()
-        if c2.button("❌ Ignorer",key="can_gpt"):
-            st.session_state["pending_pt"]=None; st.rerun()
-        st.divider()
+    # Flash feedback point créé
+    last=st.session_state.get("_last_pt_created")
+    if last:
+        st.markdown(f'<div class="success-flash">✓ Point créé : {last}</div>',unsafe_allow_html=True)
+        st.session_state["_last_pt_created"]=None
 
     if sel_oid is None:
         st.markdown('<div class="info-box">👆 Sélectionnez un objet.<br><br>'
-                    '🖱 <b>Clic gauche sur un point existant</b> → sélectionner + activer grille verticale<br>'
+                    '🖱 <b>Clic sur un point existant</b> → sélectionner + activer grille verticale<br>'
                     '🖱 <b>Clic sur le sol</b> → activer grille verticale<br>'
-                    '⌨ <b>Suppr</b> → supprimer le point / segment sélectionné<br>'
+                    '🖱 <b>Clic sur angle de carré</b> → <b>créer un point directement</b> (grille reste active)<br>'
+                    '⌨ <b>Suppr</b> → supprimer point/segment sélectionné<br>'
                     '⌨ <b>Échap</b> → fermer la grille</div>',
                     unsafe_allow_html=True); return
 
@@ -1084,22 +1104,24 @@ def panel_object_designer(obj_df,pts_df,seg_df,sel_oid):
     tab_pts,tab_segs,tab_csv=st.tabs(["📍 Points","🔗 Segments","⬇ CSV"])
 
     with tab_pts:
-        with st.expander("➕ Ajouter un point",expanded=o_pts.empty):
+        with st.expander("➕ Ajouter un point manuellement",expanded=o_pts.empty):
             c1,c2,c3,c4=st.columns([2,2,2,1])
-            nx=c1.number_input("X",value=0.0,step=1.0,format="%.1f",key="np_x")
-            ny=c2.number_input("Y",value=0.0,step=1.0,format="%.1f",key="np_y")
-            nz=c3.number_input("Z",value=0.0,step=1.0,format="%.1f",key="np_z")
+            nx=c1.number_input("X(cm)",0.0,step=0.1,format="%.1f",key="np_x")
+            ny=c2.number_input("Y(cm)",0.0,step=0.1,format="%.1f",key="np_y")
+            nz=c3.number_input("Z(cm)",0.0,step=0.1,format="%.1f",key="np_z")
             c4.markdown("<br>",unsafe_allow_html=True)
             if c4.button("OK",key="add_pt"):
                 pid=next_id(pts_df,"point_id")
                 save_parquet(pd.concat([pts_df,pd.DataFrame([{"point_id":pid,"object_id":sel_oid,"x":float(nx),"y":float(ny),"z":float(nz)}])],ignore_index=True),PTS_KEY)
                 st.rerun()
 
-        if o_pts.empty: st.info("Aucun point."); return
+        if o_pts.empty:
+            st.info("Aucun point. Cliquez dans la grille ou ajoutez manuellement."); return
 
-        pt_map3={f"#{int(r['point_id'])} ({float(r['x']):.1f},{float(r['y']):.1f},{float(r['z']):.1f})":int(r["point_id"]) for _,r in o_pts.iterrows()}
-        sel_lbl=st.selectbox("Point actif",list(pt_map3.keys()),key="sel_pt_lbl")
-        sel_pid=pt_map3[sel_lbl]
+        pt_map4={f"#{int(r['point_id'])} ({float(r['x']):.1f},{float(r['y']):.1f},{float(r['z']):.1f})":int(r["point_id"])
+                 for _,r in o_pts.iterrows()}
+        sel_lbl=st.selectbox("Point actif",list(pt_map4.keys()),key="sel_pt_lbl")
+        sel_pid=pt_map4[sel_lbl]
         pt_row=o_pts[o_pts["point_id"]==sel_pid].iloc[0]
         cx,cy,cz=float(pt_row["x"]),float(pt_row["y"]),float(pt_row["z"])
 
@@ -1107,13 +1129,12 @@ def panel_object_designer(obj_df,pts_df,seg_df,sel_oid):
                     f'<div class="pos-axis"><span>Y</span>{cy:.1f}</div>'
                     f'<div class="pos-axis"><span>Z</span>{cz:.1f}</div></div>',unsafe_allow_html=True)
 
-        pstep=st.number_input("Pas (cm)",min_value=0.1,max_value=9999.0,
-            value=st.session_state["pt_move_step"],step=0.1,format="%.1f",key="pt_step")
+        pstep=st.number_input("Pas (cm)",min_value=0.1,max_value=9999.0,value=st.session_state["pt_move_step"],step=0.1,format="%.1f",key="pt_step")
         st.session_state["pt_move_step"]=pstep
 
         def _mpt(dx=0,dy=0,dz=0):
             idx=pts_df.index[pts_df["point_id"]==sel_pid][0]
-            df2=pts_df.copy(); df2.at[idx,"x"]+=dx; df2.at[idx,"y"]+=dy; df2.at[idx,"z"]+=dz
+            df2=pts_df.copy(); df2.at[idx,"x"]+=dx;df2.at[idx,"y"]+=dy;df2.at[idx,"z"]+=dz
             save_parquet(df2,PTS_KEY); st.rerun()
 
         st.markdown('<p class="move-lbl">Plan XZ</p>',unsafe_allow_html=True)
@@ -1125,7 +1146,6 @@ def panel_object_designer(obj_df,pts_df,seg_df,sel_oid):
         if r2.button("▶ +X",key="pt_px",use_container_width=True): _mpt(dx=+pstep)
         _,bc2,_=st.columns([1,1,1])
         if bc2.button("⬇ +Z",key="pt_pz",use_container_width=True): _mpt(dz=+pstep)
-
         st.markdown('<p class="move-lbl">Vertical Y</p>',unsafe_allow_html=True)
         y1,y2,y3=st.columns(3)
         if y1.button("▲ +Y",key="pt_py",use_container_width=True): _mpt(dy=+pstep)
@@ -1145,18 +1165,18 @@ def panel_object_designer(obj_df,pts_df,seg_df,sel_oid):
             for _,rr in edit.iterrows():
                 if pd.notna(rr.get("point_id")):
                     idx=df2.index[df2["point_id"]==int(rr["point_id"])]
-                    if len(idx): df2.at[idx[0],"x"]=float(rr["x"]); df2.at[idx[0],"y"]=float(rr["y"]); df2.at[idx[0],"z"]=float(rr["z"])
+                    if len(idx): df2.at[idx[0],"x"]=float(rr["x"]);df2.at[idx[0],"y"]=float(rr["y"]);df2.at[idx[0],"z"]=float(rr["z"])
             save_parquet(df2,PTS_KEY); st.success("OK"); st.rerun()
-        if c2.button("🗑 Suppr. point",key="del_pt"):
+        if c2.button("🗑 Supprimer",key="del_pt"):
             p2=pts_df[pts_df["point_id"]!=sel_pid]
             s2=seg_df[(seg_df["point_a_id"]!=sel_pid)&(seg_df["point_b_id"]!=sel_pid)] if not seg_df.empty else seg_df
             save_parquet(p2,PTS_KEY); save_parquet(s2,SEG_KEY); st.rerun()
 
     with tab_segs:
         if o_pts.empty or len(o_pts)<2: st.info("≥2 points requis."); return
-        pt_lbl2={f"#{int(r['point_id'])} ({float(r['x']):.1f},{float(r['y']):.1f},{float(r['z']):.1f})":int(r["point_id"]) for _,r in o_pts.iterrows()}
-        lbls=list(pt_lbl2.keys())
-        c1,c2=st.columns(2)
+        pt_lbl2={f"#{int(r['point_id'])} ({float(r['x']):.1f},{float(r['y']):.1f},{float(r['z']):.1f})":int(r["point_id"])
+                 for _,r in o_pts.iterrows()}
+        lbls=list(pt_lbl2.keys()); c1,c2=st.columns(2)
         sa=c1.selectbox("A",lbls,key="seg_a"); sb=c2.selectbox("B",lbls,key="seg_b",index=min(1,len(lbls)-1))
         if st.button("🔗 Créer segment",key="mk_seg"):
             pa_id,pb_id=pt_lbl2[sa],pt_lbl2[sb]
@@ -1174,7 +1194,7 @@ def panel_object_designer(obj_df,pts_df,seg_df,sel_oid):
             st.markdown(f"**{len(o_segs)} segment(s)**")
             st.dataframe(o_segs[["segment_id","point_a_id","point_b_id"]].reset_index(drop=True),use_container_width=True,hide_index=True)
             c1,c2=st.columns([3,1])
-            dsid=c1.selectbox("Supprimer",o_segs["segment_id"].tolist(),key="dseg")
+            dsid=c1.selectbox("Suppr",o_segs["segment_id"].tolist(),key="dseg")
             if c2.button("🗑",key="dseg_b"): save_parquet(seg_df[seg_df["segment_id"]!=dsid],SEG_KEY); st.rerun()
 
     with tab_csv:
@@ -1182,11 +1202,11 @@ def panel_object_designer(obj_df,pts_df,seg_df,sel_oid):
         up=st.file_uploader("CSV",type=["csv"],key="csv_up")
         if up:
             try:
-                dfc=pd.read_csv(up,names=["x","y","z"]); st.dataframe(dfc.head(10),use_container_width=True); st.markdown(f"**{len(dfc)} points**")
+                dfc=pd.read_csv(up,names=["x","y","z"]); st.dataframe(dfc.head(10),use_container_width=True)
                 if st.button("⬇ Importer",key="do_import"):
                     base=next_id(pts_df,"point_id")
                     new=[{"point_id":base+i,"object_id":sel_oid,"x":float(rr["x"]),"y":float(rr["y"]),"z":float(rr["z"])} for i,(_,rr) in enumerate(dfc.iterrows())]
-                    save_parquet(pd.concat([pts_df,pd.DataFrame(new)],ignore_index=True),PTS_KEY); st.success(f"{len(new)} points"); st.rerun()
+                    save_parquet(pd.concat([pts_df,pd.DataFrame(new)],ignore_index=True),PTS_KEY); st.success(f"{len(new)} pts"); st.rerun()
             except Exception as e: st.error(str(e))
 
 
@@ -1205,13 +1225,30 @@ def main():
     pts_df=load_parquet(PTS_KEY,PTS_COLS)
     seg_df=load_parquet(SEG_KEY,SEG_COLS)
 
-    # Message bus
+    # ── 1. Sync config grille depuis les widgets (AVANT build_scene) ──
+    # Streamlit met à jour les clés de session avant chaque rerun
+    for wk,sk in [("gc_ang","grid_angle"),("gc_cell","grid_cell_size"),("gc_ext","grid_extent")]:
+        if wk in st.session_state:
+            val=st.session_state[wk]
+            if sk=="grid_angle": val=int(val)%360
+            elif sk=="grid_extent": val=int(val)
+            else: val=float(val)
+            st.session_state[sk]=val
+
+    # ── 2. Sync config grille depuis l'objet si sélection a changé ────
+    cur_oid=st.session_state.get("object_id")
+    if cur_oid != st.session_state.get("_prev_oid"):
+        st.session_state["_prev_oid"]=cur_oid
+        if cur_oid is not None:
+            sync_grid_from_object(obj_df, cur_oid)  # aussi efface gc_ang etc.
+
+    # ── Message bus (peut déclencher un rerun) ─────────────────────────
     viewer_msg=st.text_input("",key="_viewer_msg",placeholder="__3ds__",label_visibility="collapsed")
     if viewer_msg and viewer_msg.startswith("{") and viewer_msg!="{}":
         process_viewer_action(viewer_msg,obj_df,pts_df,seg_df)
         st.session_state["_viewer_msg"]=""
 
-    # ── SIDEBAR ───────────────────────────────────────────────────────
+    # ── Sidebar ───────────────────────────────────────────────────────
     with st.sidebar:
         st.markdown('<div class="studio-header"><div>'
                     '<div class="studio-title">🧊 3D Design Studio</div>'
@@ -1227,7 +1264,6 @@ def main():
         st.markdown(f'<span class="badge {bcls2}">{blbl2}</span>',unsafe_allow_html=True)
         st.divider()
 
-        # Projets
         st.markdown('<p class="section-label">📁 Projets</p>',unsafe_allow_html=True)
         with st.expander("Nouveau projet",expanded=proj_df.empty):
             pname=st.text_input("Nom",key="new_proj_name",placeholder="Mon projet…")
@@ -1238,7 +1274,7 @@ def main():
                     save_parquet(proj_df,PROJ_KEY); st.session_state["project_id"]=pid; st.session_state["object_id"]=None; st.rerun()
         if not proj_df.empty:
             pnames=proj_df["name"].tolist(); pids=proj_df["project_id"].tolist()
-            cur=st.session_state["project_id"]; ci=pids.index(cur) if cur in pids else 0
+            cur_p=st.session_state["project_id"]; ci=pids.index(cur_p) if cur_p in pids else 0
             sn=st.selectbox("Projet",pnames,index=ci,key="proj_sel",label_visibility="collapsed")
             st.session_state["project_id"]=pids[pnames.index(sn)]
             if st.button("🗑 Supprimer projet",key="del_proj"):
@@ -1252,7 +1288,6 @@ def main():
         else: st.caption("Aucun projet.")
         st.divider()
 
-        # Objets
         cur_pid=st.session_state.get("project_id")
         st.markdown('<p class="section-label">📦 Objets</p>',unsafe_allow_html=True)
         if cur_pid is not None:
@@ -1260,15 +1295,20 @@ def main():
                 oname=st.text_input("Nom",key="new_obj_name",placeholder="Objet A…")
                 if st.button("Créer",key="create_obj"):
                     oid=next_id(obj_df,"object_id")
-                    obj_df=pd.concat([obj_df,pd.DataFrame([{"object_id":oid,"project_id":cur_pid,"name":oname.strip() or f"Objet {oid}",
+                    obj_df=pd.concat([obj_df,pd.DataFrame([{
+                        "object_id":oid,"project_id":cur_pid,"name":oname.strip() or f"Objet {oid}",
                         "pos_x":0.,"pos_y":0.,"pos_z":0.,"rot_x":0.,"rot_y":0.,"rot_z":0.,"rot_w":1.,
-                        "scale_x":1.,"scale_y":1.,"scale_z":1.,"anchor_x":0.,"anchor_y":0.,"anchor_z":0.}])],ignore_index=True)
+                        "scale_x":1.,"scale_y":1.,"scale_z":1.,"anchor_x":0.,"anchor_y":0.,"anchor_z":0.,
+                        "grid_cell_size":float(st.session_state["grid_cell_size"]),
+                        "grid_extent":int(st.session_state["grid_extent"]),
+                        "grid_angle":int(st.session_state["grid_angle"]),
+                    }])],ignore_index=True)
                     save_parquet(obj_df,OBJ_KEY); st.session_state["object_id"]=oid; st.rerun()
             proj_objs=obj_df[obj_df["project_id"]==cur_pid] if not obj_df.empty else pd.DataFrame()
-            sel_oid=st.session_state.get("object_id")
+            sel_oid2=st.session_state.get("object_id")
             if not proj_objs.empty:
                 for _,o in proj_objs.iterrows():
-                    oid2=int(o["object_id"]); active=oid2==sel_oid
+                    oid2=int(o["object_id"]); active=oid2==sel_oid2
                     np_=len(pts_df[pts_df["object_id"]==oid2]) if not pts_df.empty else 0
                     if st.button(f"{'▶ ' if active else '  '}{o['name']} · {np_}pt",key=f"sel_{oid2}",use_container_width=True):
                         st.session_state["object_id"]=oid2; st.rerun()
@@ -1276,36 +1316,40 @@ def main():
         else: st.caption("Sélectionnez un projet.")
         st.divider()
 
-        # Affichage
         st.markdown('<p class="section-label">👁 Affichage</p>',unsafe_allow_html=True)
         c1,c2=st.columns(2)
-        st.session_state["show_grid"]=c1.checkbox("Grille",value=True)
+        st.session_state["show_grid"]=c1.checkbox("Grille fond",value=True)
         st.session_state["show_axes"]=c2.checkbox("Axes",value=True)
         st.session_state["snap"]=st.checkbox("Snap visuel",value=True)
         if st.session_state["snap"]:
             st.session_state["snap_dist"]=st.slider("Seuil snap",0.5,30.0,5.0,0.5,label_visibility="collapsed")
 
-    # ── MAIN ZONE ─────────────────────────────────────────────────────
-    cur_oid=st.session_state.get("object_id")
-    cur_pts=st.session_state.get("selected_pts",[])
+    # ── Zone principale ───────────────────────────────────────────────
+    cur_oid2=st.session_state.get("object_id")
     cur_pid2=st.session_state.get("project_id")
 
     coinc=set()
     if st.session_state["mode"]=="plan_editor" and not obj_df.empty and not pts_df.empty:
-        coinc=find_coincident_points(obj_df,pts_df)
+        coinc=find_coincident(obj_df,pts_df)
 
-    scene=build_scene_json(cur_pid2,obj_df,pts_df,seg_df,cur_oid,cur_pts,coinc)
+    # Build scene avec les valeurs de session state DÉJÀ synchronisées
+    scene=build_scene_json(cur_pid2,obj_df,pts_df,seg_df,cur_oid2,
+                           st.session_state.get("selected_pts",[]),coinc)
     render_viewer(scene,st.session_state["mode"],height=530)
 
-    # Grid control bar (directly under viewer, always visible when grid active)
-    render_grid_controls()
+    # ── Barre de contrôle grille (sous le viewer) ─────────────────────
+    render_grid_controls(obj_df, cur_oid2)
+
+    # Sauvegarder config grille dans l'objet si elle a changé
+    if cur_oid2 is not None:
+        obj_df=save_grid_to_object(obj_df, cur_oid2)
 
     st.markdown("<hr style='border-color:#21262d;margin:6px 0'>",unsafe_allow_html=True)
 
     if st.session_state["mode"]=="plan_editor":
-        panel_plan_editor(obj_df,pts_df,seg_df,cur_oid,coinc)
+        panel_plan_editor(obj_df,pts_df,seg_df,cur_oid2,coinc)
     else:
-        panel_object_designer(obj_df,pts_df,seg_df,cur_oid)
+        panel_object_designer(obj_df,pts_df,seg_df,cur_oid2)
 
 
 if __name__=="__main__":
