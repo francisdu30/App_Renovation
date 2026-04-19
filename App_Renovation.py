@@ -417,7 +417,7 @@ const VGRID={{
   plane:new THREE.Plane(),
   // Hover indicator
   hoverMesh:null,
-  hoverPos:null, // {iu,iv,distCm,worldPos}
+  hoverPos:null, // {{iu,iv,distCm,worldPos}}
 }};
 threeScene.add(VGRID.group);
 
